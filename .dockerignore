@@ -1,0 +1,49 @@
+# Dependencies and build output — installed/produced fresh inside the image.
+node_modules
+dist
+
+# Version control
+.git
+.gitattributes
+.gitignore
+
+# Secrets and local environment files — never sent to the build context.
+.env
+.env.*
+!.env.example
+
+# App-generated caches/logs — ephemeral, regenerated at runtime.
+.gev-cache
+.gev-logs
+
+# Local/dev-only tooling and artifacts not needed to build or run the app.
+pinokio
+tools
+.github
+screenshots
+qa-shots
+output
+.gstack
+3d-models
+
+# Documentation not needed to build or run the app (kept in git, excluded
+# only from the Docker build context).
+docs
+CHANGELOG.md
+CONTRIBUTING.md
+DATA_SOURCES.md
+SECURITY.md
+TESTING.md
+CLAUDE.md
+FORK.md
+
+# Editor/OS clutter.
+.DS_Store
+.vscode
+.idea
+*.log
+npm-debug.log*
+
+# Container tooling itself (avoid self-copy on rebuilds).
+Dockerfile
+.dockerignore

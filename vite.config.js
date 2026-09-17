@@ -1584,9 +1584,7 @@ function celestrakProxy() {
     return { at: Date.now(), body };
   }
 
-  return {
-    name: 'celestrak-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/celestrak', async (req, res) => {
         const group = String(req.url || '').replace(/^\//, '').split('?')[0];
         if (!/^[a-z0-9-]+$/i.test(group)) {
@@ -1639,7 +1637,11 @@ function celestrakProxy() {
           send(500, `celestrak proxy error: ${err?.message || err}`, 'ERROR');
         }
       });
-    },
+  };
+  return {
+    name: 'celestrak-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -1888,9 +1890,7 @@ function tomtomProxy() {
     return buf;
   }
 
-  return {
-    name: 'tomtom-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/tomtom', async (req, res) => {
         // Sanitized responses only (proxy/security baseline): no upstream
         // error details, and never echo the key or the upstream URL.
@@ -1993,7 +1993,11 @@ function tomtomProxy() {
           sendJson(500, { error: 'proxy' });
         }
       });
-    },
+  };
+  return {
+    name: 'tomtom-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -2145,9 +2149,7 @@ function firmsProxy() {
     return statusInflight;
   }
 
-  return {
-    name: 'firms-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/firms', async (req, res) => {
         const sendJson = (status, obj) => {
           if (res.headersSent) return;
@@ -2216,7 +2218,11 @@ function firmsProxy() {
           sendJson(500, { error: 'firms proxy error' });
         }
       });
-    },
+  };
+  return {
+    name: 'firms-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -2326,9 +2332,7 @@ function terrainHeightsProxy() {
     return inflight.get(key);
   }
 
-  return {
-    name: 'terrain-heights-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/terrain/heights', async (req, res) => {
         const send = (status, bodyObj) => {
           if (res.headersSent) return;
@@ -2367,7 +2371,11 @@ function terrainHeightsProxy() {
           send(500, { error: `terrain heights proxy error: ${err?.message || err}` });
         }
       });
-    },
+  };
+  return {
+    name: 'terrain-heights-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -2460,9 +2468,7 @@ function adsbdbProxy() {
     return inflight.get(ik);
   }
 
-  return {
-    name: 'adsbdb-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/adsbdb', async (req, res) => {
         await loadOnce();
         const send = (status, obj) => {
@@ -2488,7 +2494,11 @@ function adsbdbProxy() {
           return send(500, { error: String(err?.message || err) });
         }
       });
-    },
+  };
+  return {
+    name: 'adsbdb-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -2633,9 +2643,7 @@ async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPON
  * @returns {import('vite').Plugin}
  */
 function overpassProxy() {
-  return {
-    name: 'overpass-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/overpass', async (req, res) => {
         // Hoisted out of the try so the catch's serve-stale lookup can see it
         // (a body-read failure would otherwise hit an out-of-scope reference).
@@ -2842,7 +2850,11 @@ function overpassProxy() {
           fail('route proxy error');
         }
       });
-    },
+  };
+  return {
+    name: 'overpass-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -2958,9 +2970,7 @@ function openSkySourceIsStale(sourceEpochMs, now = Date.now()) {
  * @returns {import('vite').Plugin}
  */
 function openSkyProxy() {
-  return {
-    name: 'opensky-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/opensky', async (req, res) => {
         try {
           const requestedMode = normalizeOpenSkyAuthMode(process.env.OPENSKY_AUTH_MODE);
@@ -3237,7 +3247,11 @@ function openSkyProxy() {
           res.end(JSON.stringify({ error: 'OpenSky proxy error' }));
         }
       });
-    },
+  };
+  return {
+    name: 'opensky-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -3293,9 +3307,7 @@ function gbfsCacheControl(pathname) {
  * @returns {import('vite').Plugin}
  */
 function gbfsProxy() {
-  return {
-    name: 'gbfs-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/gbfs', async (req, res) => {
         try {
           if (req.method !== 'GET') {
@@ -3397,7 +3409,11 @@ function gbfsProxy() {
           res.end(JSON.stringify({ error: 'GBFS proxy error' }));
         }
       });
-    },
+  };
+  return {
+    name: 'gbfs-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -4538,9 +4554,7 @@ function cctvProxy() {
     }
   };
 
-  return {
-    name: 'cctv-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/cctv', async (req, res) => {
         try {
           const sources = await getCctvSources();
@@ -4743,7 +4757,11 @@ function cctvProxy() {
           res.end(JSON.stringify({ error: 'CCTV proxy error' }));
         }
       });
-    },
+  };
+  return {
+    name: 'cctv-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
@@ -4762,9 +4780,7 @@ function adsbLolProxy() {
   let _cacheAt = 0;
   /** Response cache TTL (ms). */
   const CACHE_MS = 12000;
-  return {
-    name: 'adsblol-proxy',
-    configureServer(server) {
+  const install = (server) => {
       server.middlewares.use('/api/adsblol/mil', async (req, res) => {
         try {
           const now = Date.now();
@@ -4794,7 +4810,11 @@ function adsbLolProxy() {
           res.end(JSON.stringify({ error: 'ADS-B proxy error' }));
         }
       });
-    },
+  };
+  return {
+    name: 'adsblol-proxy',
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }
 
