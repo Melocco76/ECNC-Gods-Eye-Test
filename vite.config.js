@@ -5632,6 +5632,127 @@ export function googlePlacesContextProxy() {
         res.end(JSON.stringify({ error: error?.message || 'Google Places request failed', places: [] }));
       }
     });
+
+    // Geocoding: forward-geocode an address query (optionally biased to a
+    // viewport), or reverse-geocode a lat/lng pair. Same server-side key and
+    // opt-in throttle as nearby-places/text-search above — the browser never
+    // sees GOOGLE_MAPS_SERVER_KEY. The upstream JSON shape (status/results/
+    // error_message) is passed through unchanged so existing client parsing
+    // (locations.js, annotationResolver.js, gevActions.js) needs no logic
+    // changes beyond calling this same-origin endpoint instead of Google's.
+    middlewares.use('/api/google/geocode', async (req, res) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: 'INVALID_REQUEST', results: [], error: 'Method not allowed' }));
+        return;
+      }
+
+      const apiKey = resolveGoogleMapsServerKey();
+      if (!apiKey) {
+        // Mirrors keylessGooglePlacesResponse's spirit (deliberately absent
+        // key is a configured terminal state, not a server error) but keeps
+        // the Geocoding response shape callers already parse.
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify({ status: 'REQUEST_DENIED', results: [], error_message: 'Geocoding is not configured on this server.' }));
+        return;
+      }
+
+      const _grl = googleRateLimiter();
+      if (_grl && !_grl(clientKey(req))) {
+        res.statusCode = 429;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Retry-After', '5');
+        res.end(JSON.stringify({ status: 'OVER_QUERY_LIMIT', results: [], error: 'Rate limit exceeded' }));
+        return;
+      }
+
+      const requestUrl = new URL(req.url || '', 'http://localhost');
+      const addressParam = requestUrl.searchParams.get('address');
+      const latlngParam = requestUrl.searchParams.get('latlng');
+      const boundsParam = requestUrl.searchParams.get('bounds');
+
+      // Fixed upstream host/path only — never a caller-supplied URL. Only the
+      // three allowlisted, validated params below (plus the server-held key)
+      // are ever forwarded.
+      const upstream = new URL('https://maps.googleapis.com/maps/api/geocode/json');
+
+      if (latlngParam) {
+        const parts = String(latlngParam).split(',').map(Number);
+        const [rlat, rlng] = parts;
+        const validLatLng = parts.length === 2 && parts.every(Number.isFinite)
+          && Math.abs(rlat) <= 90 && Math.abs(rlng) <= 180;
+        if (!validLatLng) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ status: 'INVALID_REQUEST', results: [], error: 'Invalid latlng' }));
+          return;
+        }
+        upstream.searchParams.set('latlng', `${rlat},${rlng}`);
+      } else if (addressParam) {
+        const trimmed = String(addressParam).trim().slice(0, 200);
+        if (!trimmed) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ status: 'INVALID_REQUEST', results: [], error: 'Address query is required' }));
+          return;
+        }
+        upstream.searchParams.set('address', trimmed);
+        if (boundsParam) {
+          const b = String(boundsParam).match(/^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\|(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/);
+          if (b) {
+            const nums = b.slice(1, 5).map(Number);
+            const validBounds = nums.every(Number.isFinite)
+              && Math.abs(nums[0]) <= 90 && Math.abs(nums[2]) <= 90
+              && Math.abs(nums[1]) <= 180 && Math.abs(nums[3]) <= 180;
+            if (validBounds) upstream.searchParams.set('bounds', boundsParam);
+          }
+        }
+      } else {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: 'INVALID_REQUEST', results: [], error: 'address or latlng is required' }));
+        return;
+      }
+
+      upstream.searchParams.set('key', apiKey);
+
+      try {
+        const response = await fetch(upstream, { signal: AbortSignal.timeout(10000) });
+        const text = await response.text();
+        if (text.length > 1_000_000) {
+          res.statusCode = 502;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ status: 'UNKNOWN_ERROR', results: [], error: 'Upstream response too large' }));
+          return;
+        }
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          res.statusCode = 502;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ status: 'UNKNOWN_ERROR', results: [], error: 'Upstream returned an invalid response' }));
+          return;
+        }
+        // Sanitized pass-through: only the fields the client already parses,
+        // never headers/upstream-URL/key details.
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify({
+          status: data.status || 'UNKNOWN_ERROR',
+          results: Array.isArray(data.results) ? data.results : [],
+          error_message: data.error_message,
+        }));
+      } catch {
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({ status: 'UNKNOWN_ERROR', results: [], error: 'Geocode proxy error' }));
+      }
+    });
   }
 
   return {

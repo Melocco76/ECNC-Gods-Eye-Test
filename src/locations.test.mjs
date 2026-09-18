@@ -597,3 +597,24 @@ test('search without an authority hook preserves the existing caller contract', 
   assert.equal(result.navigationMode, 'city-overview');
   assert.equal(viewer.flights.length, 1);
 });
+
+// Geocoding cannot run from the browser against a referrer-restricted key (a
+// hard Google product limitation), so the client must call the same-origin
+// server proxy — never maps.googleapis.com directly.
+test('searchAndFlyTo calls the same-origin geocode proxy, never maps.googleapis.com', async () => {
+  const viewer = stubViewer();
+  const priorFetch = globalThis.fetch;
+  let capturedUrl;
+  globalThis.fetch = async (url) => {
+    capturedUrl = String(url);
+    return { json: async () => ({ status: 'OK', results: [AUSTIN_RESULT] }) };
+  };
+  try {
+    await searchAndFlyTo(viewer, 'austin');
+  } finally {
+    globalThis.fetch = priorFetch;
+  }
+  assert.ok(capturedUrl.startsWith('/api/google/geocode?'), `expected same-origin proxy, got ${capturedUrl}`);
+  assert.equal(capturedUrl.includes('maps.googleapis.com'), false);
+  assert.ok(capturedUrl.includes('address=austin'));
+});

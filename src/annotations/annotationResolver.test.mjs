@@ -198,7 +198,7 @@ test('ask-side admin bypass: "the Texas Capitol" recovers near-view despite a fa
   const calls = [];
   installGoogleMocks(t, async (url) => {
     calls.push(String(url));
-    if (String(url).startsWith('https://maps.googleapis.com/')) {
+    if (String(url).startsWith('/api/google/geocode')) {
       return { json: async () => geocodePayload({
         lat: 31.0000,
         lon: -99.0000,
@@ -233,7 +233,7 @@ test('ask-side admin bypass: explicit "state of Texas" skips recovery and proxim
   const calls = [];
   installGoogleMocks(t, async (url) => {
     calls.push(String(url));
-    assert.match(String(url), /^https:\/\/maps\.googleapis\.com\/maps\/api\/geocode/);
+    assert.match(String(url), /^\/api\/google\/geocode/);
     return { json: async () => geocodePayload({
       lat: 31.0000,
       lon: -99.0000,
@@ -271,7 +271,7 @@ for (const fixture of [
     const calls = [];
     installGoogleMocks(t, async (url) => {
       calls.push(String(url));
-      if (String(url).startsWith('https://maps.googleapis.com/')) {
+      if (String(url).startsWith('/api/google/geocode')) {
         return { json: async () => geocodePayload({
           lat: fixture.lat,
           lon: fixture.lon,
@@ -297,7 +297,7 @@ test('ask-side admin bypass: bare "Texas" remains on the guarded recovery path',
   const calls = [];
   installGoogleMocks(t, async (url) => {
     calls.push(String(url));
-    if (String(url).startsWith('https://maps.googleapis.com/')) {
+    if (String(url).startsWith('/api/google/geocode')) {
       return { json: async () => geocodePayload({
         lat: 31.0000,
         lon: -99.0000,
@@ -326,8 +326,8 @@ test('ask-side admin bypass: admin level 2/3 result types never grant a township
   const calls = [];
   installGoogleMocks(t, async (url) => {
     calls.push(String(url));
-    if (String(url).startsWith('https://maps.googleapis.com/')) {
-      const query = new URL(String(url)).searchParams.get('address');
+    if (String(url).startsWith('/api/google/geocode')) {
+      const query = new URL(String(url), 'http://localhost').searchParams.get('address');
       return { json: async () => geocodePayload({
         lat: 39.7817,
         lon: -89.6501,

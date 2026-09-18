@@ -603,15 +603,14 @@ function ringAreaM2(ring) {
  * viewport so "the marina" resolves near where the user is looking.
  */
 async function geocodePlace(query, biasRect, signal) {
-  const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) return null;
-
   const cacheKey = `${query.toLowerCase()}|${biasRect || ''}`;
   const cached = cacheRead(geocodeCache, cacheKey);
   if (cached !== undefined) return cached;
 
-  let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
-  if (biasRect) url += `&bounds=${biasRect}`;
+  // Routed through the same-origin server proxy (GOOGLE_MAPS_SERVER_KEY stays
+  // server-side) rather than calling Google directly with a browser key.
+  let url = `/api/google/geocode?address=${encodeURIComponent(query)}`;
+  if (biasRect) url += `&bounds=${encodeURIComponent(biasRect)}`;
 
   try {
     const response = await fetch(url, { signal });

@@ -1264,15 +1264,15 @@ async function resolveRadioLocation(args = {}, coordinates = radioCoordinatePair
   const known = knownRadioLocation(query, args.locationId);
   if (known) return known;
   if (!query) return null;
-  const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) throw new Error('No Google Maps API key available for Radio location search');
   const controller = new AbortController();
   const cancelFromTurn = () => controller.abort();
   if (options.signal?.aborted) throw radioAbortError();
   options.signal?.addEventListener('abort', cancelFromTurn, { once: true });
   const timer = setTimeout(() => controller.abort(), 6000);
   try {
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
+    // Routed through the same-origin server proxy (GOOGLE_MAPS_SERVER_KEY
+    // stays server-side) rather than calling Google directly with a browser key.
+    const url = `/api/google/geocode?address=${encodeURIComponent(query)}`;
     const response = await fetch(url, { signal: controller.signal });
     const body = await response.json();
     if (!radioActionIsCurrent(options)) throw radioAbortError();
@@ -2938,15 +2938,16 @@ function inferCountry(latitude, longitude) {
 }
 
 async function reverseGeocode(latitude, longitude) {
-  const apiKey = window.__GOOGLE_MAPS_API_KEY__;
-  if (!apiKey || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
   const key = reverseGeocodeKey(latitude, longitude);
   if (reverseGeocodeCache.has(key)) return reverseGeocodeCache.get(key);
   if (reverseGeocodeInFlight.has(key)) return reverseGeocodeInFlight.get(key);
 
   const request = (async () => {
     try {
-      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${encodeURIComponent(`${latitude},${longitude}`)}&key=${apiKey}`;
+      // Routed through the same-origin server proxy (GOOGLE_MAPS_SERVER_KEY
+      // stays server-side) rather than calling Google directly with a browser key.
+      const url = `/api/google/geocode?latlng=${encodeURIComponent(`${latitude},${longitude}`)}`;
       const response = await fetchWithTimeout(url, {}, 5000);
       const data = await response.json();
       if (data.status !== 'OK' || !data.results?.length) {
