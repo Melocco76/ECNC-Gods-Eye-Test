@@ -1920,6 +1920,84 @@ body.ui-clean-view #scene-runtime.active {
   font-size: 18px;
 }
 
+#top-center-actions #map-weather-toggle[aria-pressed='true'] {
+  border-color: rgba(0, 212, 255, 0.5);
+  color: var(--accent);
+}
+
+/* ── Map-mode weather card (opt-in, below the globe actions) ── */
+#map-weather-card {
+  position: fixed;
+  top: 112px;
+  left: 50%;
+  z-index: 101;
+  width: min(268px, calc(100vw - 32px));
+  padding: 8px 10px 7px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 212, 255, 0.24);
+  background: rgba(3, 10, 18, 0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: rgba(184, 244, 255, 0.92);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  transform: translateX(-50%);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34), 0 0 14px rgba(0, 212, 255, 0.08);
+}
+#map-weather-card[hidden] { display: none; }
+.map-weather-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.map-weather-title { color: #00e1ff; font-weight: 600; letter-spacing: 1.6px; }
+.map-weather-status { margin-left: auto; color: rgba(184, 244, 255, 0.6); }
+#map-weather-card[data-status='ready'] .map-weather-status { color: #7dffb0; }
+#map-weather-card[data-status='stale'] .map-weather-status { color: #ffc857; }
+#map-weather-card[data-status='unavailable'] .map-weather-status { color: #ff8a8a; }
+.map-weather-close {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.map-weather-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 4px;
+}
+.map-weather-main strong { font-size: 20px; letter-spacing: 0; color: #fff; }
+.map-weather-place { margin-top: 1px; color: rgba(184, 244, 255, 0.55); }
+.map-weather-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px 8px;
+  margin: 6px 0 0;
+}
+.map-weather-grid dt { color: rgba(184, 244, 255, 0.5); font-size: 8px; }
+.map-weather-grid dd { margin: 0; color: #e8fbff; }
+.map-weather-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  color: rgba(184, 244, 255, 0.5);
+  font-size: 8px;
+  text-transform: none;
+}
+.map-weather-foot a { color: rgba(184, 244, 255, 0.7); }
+body:is(.cockpit-mode, .ui-clean-view, .recording-mode, .scene-playback-mode) :is(#map-weather-card, #map-weather-toggle) {
+  display: none !important;
+}
+
 #global-loading-status {
   position: fixed;
   top: 74px;

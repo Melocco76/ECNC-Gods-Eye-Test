@@ -23,6 +23,7 @@ import { MapStackController } from './mapStackController.js';
 import { initAnnotations } from './annotations/index.js';
 import { initLogoGaze } from './logoGaze.js';
 import { initCockpitCloudEffects } from './cockpitCloudEffects.js';
+import { initMapWeatherCard } from './mapWeatherCard.js';
 import {
   installRenderGovernor,
   getRenderGovernorDiagnostics,
@@ -194,6 +195,7 @@ async function init() {
     // Cesium fog or post-process stages and is fully stopped in map mode.
     const weatherEffects = null;
     const cockpitCloudEffects = initCockpitCloudEffects(viewer);
+    const mapWeatherCard = initMapWeatherCard(viewer);
 
     // If no share link state, do default fly-to Austin
     if (!styleManager.hasShareState) {
@@ -323,6 +325,7 @@ async function init() {
       annotations,
       weatherEffects,
       cockpitCloudEffects,
+      mapWeatherCard,
       getRenderGovernorDiagnostics,
       requestRender: governorRequestRender,
     };

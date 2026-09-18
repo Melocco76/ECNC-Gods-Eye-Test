@@ -46,7 +46,34 @@
     <button id="reset-globe-view" type="button" aria-label="Reset to full globe view" title="Reset camera and return to full globe view">
       <span class="material-symbols-outlined" aria-hidden="true">public</span>
     </button>
+    <button id="map-weather-toggle" type="button" aria-label="Local weather" aria-pressed="false" aria-controls="map-weather-card" title="Show local weather">
+      <span class="material-symbols-outlined" aria-hidden="true">partly_cloudy_day</span>
+    </button>
   </nav>
+  <aside id="map-weather-card" aria-label="Local weather at the view centre" data-status="unavailable" hidden>
+    <header class="map-weather-head">
+      <span class="map-weather-title">WEATHER</span>
+      <span id="map-weather-status" class="map-weather-status" role="status" aria-live="polite">UNAVAILABLE</span>
+      <button type="button" class="map-weather-close" data-map-weather-close aria-label="Hide local weather" title="Hide local weather">&times;</button>
+    </header>
+    <div class="map-weather-main">
+      <strong id="map-weather-temperature">—</strong>
+      <span id="map-weather-condition">—</span>
+    </div>
+    <div id="map-weather-place" class="map-weather-place">—</div>
+    <dl class="map-weather-grid">
+      <div><dt>FEELS</dt><dd id="map-weather-feels">—</dd></div>
+      <div><dt>CLOUD</dt><dd id="map-weather-cloud">—</dd></div>
+      <div><dt>PRECIP</dt><dd id="map-weather-precip">—</dd></div>
+      <div><dt>VIS</dt><dd id="map-weather-visibility">—</dd></div>
+      <div><dt>WIND</dt><dd id="map-weather-wind">—</dd></div>
+      <div><dt>DIR</dt><dd id="map-weather-wind-dir">—</dd></div>
+    </dl>
+    <footer class="map-weather-foot">
+      <span>OBS <span id="map-weather-observed">—</span></span>
+      <a href="https://open-meteo.com/" target="_blank" rel="noopener">Weather data by Open-Meteo.com</a>
+    </footer>
+  </aside>
   <div id="global-loading-status" role="status" aria-live="polite" aria-atomic="true" hidden>
     <span id="global-loading-label">LOADING LIVE DATA</span>
     <span id="global-loading-detail"></span>
