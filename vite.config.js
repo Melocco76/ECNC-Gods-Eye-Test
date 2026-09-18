@@ -35,7 +35,7 @@ import { Readable } from 'node:stream';
 import https from 'node:https';
 import { lookup as lookupDns, resolve4 as resolve4Dns, resolve6 as resolve6Dns } from 'node:dns/promises';
 import { getDefaultResultOrder as dnsGetDefaultResultOrder } from 'node:dns';
-import { getDefaultAutoSelectFamily, getDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
+import { connect as netConnect, getDefaultAutoSelectFamily, getDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { directionToHeading } from './src/data/directionText.js';
 import {
   isValidTileCoord as isValidTomTomTile,
@@ -1511,6 +1511,36 @@ async function getOpenSkyToken() {
             );
           } catch (diagErr) {
             console.warn('[OpenSky][net-diag] node network defaults lookup failed:', diagErr?.message || String(diagErr));
+          }
+          // TEMPORARY: raw TCP-only connect test (no TLS, no HTTP, no data
+          // sent) against the resolved OpenSky auth IP, to isolate whether
+          // the failure is at the TCP layer or above it. Socket is always
+          // destroyed after connect/timeout/error. Remove once the network
+          // path investigation concludes.
+          try {
+            const tcpStart = Date.now();
+            const { result: tcpConnectResult, err: tcpErr } = await new Promise((resolve) => {
+              const socket = netConnect({ host: '194.209.200.34', port: 443, timeout: 10000 });
+              const finish = (result, err) => {
+                socket.removeAllListeners();
+                socket.destroy();
+                resolve({ result, err: err || null });
+              };
+              socket.once('connect', () => finish('connected'));
+              socket.once('timeout', () => finish('timeout'));
+              socket.once('error', (err) => finish('error', err));
+            });
+            const elapsedMs = Date.now() - tcpStart;
+            console.warn(
+              '[OpenSky][net-diag] raw TCP connect 194.209.200.34:443:',
+              `tcpConnectResult=${tcpConnectResult}`,
+              `elapsedMs=${elapsedMs}`,
+              `errorCode=${tcpErr?.code || 'none'}`,
+              `errorName=${tcpErr?.name || 'none'}`,
+              `errorMessage=${tcpErr?.message || 'none'}`
+            );
+          } catch (diagErr) {
+            console.warn('[OpenSky][net-diag] raw TCP connect diagnostic failed:', diagErr?.code || diagErr?.message || String(diagErr));
           }
         })();
         _openskyAuthWarned = true;
