@@ -1460,7 +1460,17 @@ async function getOpenSkyToken() {
       return _openskyToken;
     } catch (err) {
       if (!_openskyAuthWarned) {
-        console.warn('[OpenSky] OAuth token request failed:', err?.message || String(err));
+        // Safe lower-level diagnostic fields only (code/name/message of the
+        // underlying cause) — never the full error/cause object, request
+        // body, headers, or any credential/token value.
+        const cause = err?.cause;
+        console.warn(
+          '[OpenSky] OAuth token request failed:',
+          `message=${err?.message || String(err)}`,
+          `causeCode=${cause?.code || 'unknown'}`,
+          `causeName=${cause?.name || 'unknown'}`,
+          `causeMessage=${cause?.message || 'unavailable'}`
+        );
         _openskyAuthWarned = true;
       }
       _openskyToken = null;
