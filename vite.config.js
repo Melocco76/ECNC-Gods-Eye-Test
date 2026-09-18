@@ -31,7 +31,9 @@ import { promises as fsp } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import zlib from 'node:zlib';
 import https from 'node:https';
 import { lookup as lookupDns } from 'node:dns/promises';
 import { directionToHeading } from './src/data/directionText.js';
@@ -41,7 +43,8 @@ import {
   normalizeBudget as normalizeTomTomBudget,
   isOverBudget as isTomTomOverBudget,
 } from './src/data/tomtomTiles.js';
-import { filterTrailing24h, parseFirmsCsv } from './src/data/firmsCsv.js';
+import { streamFirmsCsv, trailingWindow } from './src/data/firmsCsv.js';
+import { FIRMS_SOURCES, FIRMS_SOURCE_LIMITS } from './src/data/firmsSources.js';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { defineConfig, loadEnv } from 'vite';
@@ -2012,17 +2015,34 @@ function tomtomProxy() {
 }
 
 /**
- * NASA FIRMS live active-fire proxy with a memory + disk cache.
+ * NASA FIRMS live active-fire proxy.
  * Upstream: https://firms.modaps.eosdis.nasa.gov/api/area/csv/{KEY}/{SOURCE}/world/2
  *
- * Merges three VIIRS NRT sources (NOAA-20, NOAA-21, Suomi-NPP — independent
- * satellites, no cross-source dedup) fetched sequentially with `days=2`
- * (`days=1` means "current UTC day", nearly empty just after 00:00Z) and
- * clamps to the trailing 24 h via src/data/firmsCsv.js. FIRMS quota is
- * 5,000 transactions / 10 min per MAP_KEY, so the cache is the point:
- * TTL 30 min, single-flight refresh, serve-stale-on-failure, and a
- * fresh-enough disk cache (.gev-cache/firms.json) prevents ANY upstream
- * fetch across dev-server restarts. Pattern mirrors celestrakProxy.
+ * Merges the VIIRS NRT sources listed in src/data/firmsSources.js (currently
+ * NOAA-20, NOAA-21, Suomi-NPP — independent satellites, no cross-source dedup)
+ * fetched sequentially with `days=2` (`days=1` means "current UTC day", nearly
+ * empty just after 00:00Z). FIRMS quota is 5,000 transactions / 10 min per
+ * MAP_KEY, so the cache is the point: TTL 30 min, single-flight refresh,
+ * serve-stale-on-failure.
+ *
+ * Memory model (hardened): each upstream body is STREAMED and parsed line by
+ * line (src/data/firmsCsv.js streamFirmsCsv) — the raw CSV is never held — with
+ * per-source byte/row/record caps. Each kept record is serialized once, at
+ * refresh, straight into a per-source, per-acquisition-MINUTE Buffer bucket
+ * (every record already carries its own acqDate/acqTime; the bucket key is that
+ * timestamp). No parsed-record objects are retained.
+ *
+ * Rolling 24 h: at serve time the trailing-24 h cutoff (trailingWindow, the same
+ * predicate as filterTrailing24h) is applied to the BUCKET timestamps and only
+ * the surviving buckets are streamed to the client, zero-copy. A minute bucket
+ * holds a single exact timestamp, so this equals a per-record filter. Fresh,
+ * stale and disk-restored data therefore all drop detections as they age past
+ * 24 h, with no upstream refresh and no re-parse or re-stringify of records.
+ * A gzip copy is built lazily per distinct surviving window and cached (the
+ * last two), with node:zlib.
+ *
+ * The disk copy is local-dev only (Cloud Run's writable filesystem is
+ * memory-backed and ephemeral).
  *
  * Routes:
  *   GET /api/firms        → {fetchedAt, stale, ttlMs, sources, count, fires}
@@ -2031,59 +2051,157 @@ function tomtomProxy() {
  * Keyless (no FIRMS_MAP_KEY): /api/firms → 503 {error:'no_key'}; status →
  * {hasKey:false}. Upstream is never touched without a key.
  *
+ * Options exist for tests only; defaults are the production behaviour.
+ *
+ * @param {Object} [options]
+ * @param {readonly string[]} [options.sources] - Source list override.
+ * @param {Object} [options.limits] - Per-source limits override.
+ * @param {typeof fetch} [options.fetchImpl] - fetch override.
+ * @param {() => number} [options.now] - Clock override.
+ * @param {(key: string) => boolean} [options.rateLimiter] - allow(key) override.
+ * @param {string|false} [options.diskCacheDir] - Local cache dir, or false to disable.
+ * @param {() => string} [options.getKey] - Key reader override.
  * @returns {import('vite').Plugin}
  */
-function firmsProxy() {
+export function firmsProxy(options = {}) {
   const TTL_MS = 30 * 60_000;
   const STATUS_TTL_MS = 5 * 60_000;
-  const SOURCES = ['VIIRS_NOAA20_NRT', 'VIIRS_NOAA21_NRT', 'VIIRS_SNPP_NRT'];
-  const CACHE_DIR = path.join(process.cwd(), '.gev-cache');
-  const CACHE_PATH = path.join(CACHE_DIR, 'firms.json');
+  const GZIP_CACHE_MAX = 2;
+  const SOURCES = options.sources || FIRMS_SOURCES;
+  const LIMITS = { ...FIRMS_SOURCE_LIMITS, ...(options.limits || {}) };
+  const fetchImpl = options.fetchImpl || ((...args) => fetch(...args));
+  const clock = options.now || Date.now;
+  // Per-client fixed window. Behind Cloud Run every request shares the front end's socket
+  // address, so this acts as a (generous) service-wide cap there.
+  const limiter = options.rateLimiter
+    || makeRateLimiter({ windowMs: 60_000, max: 20, globalMax: 60 });
+  const isCloudRun = Boolean(process.env.K_SERVICE);
+  const CACHE_DIR = options.diskCacheDir === undefined
+    ? (isCloudRun || process.env.GEV_FIRMS_DISK_CACHE === '0' ? false : path.join(process.cwd(), '.gev-cache'))
+    : options.diskCacheDir;
+  const META_PATH = CACHE_DIR ? path.join(CACHE_DIR, 'firms-v3.meta.json') : null;
+  const DATA_PATH = CACHE_DIR ? path.join(CACHE_DIR, 'firms-v3.data.gz') : null;
+  const COMMA = Buffer.from(',');
+  const TAIL = Buffer.from(']}');
 
-  /** @type {?{at: number, sources: Array<object>, fires: Array<object>}} */
+  /**
+   * One acquisition minute of serialized fires ('{...},{...}', no outer commas).
+   * @typedef {{ms: number, count: number, buf: Buffer}} Bucket
+   * @typedef {{chunks: Buffer[], length: number}} ByteBundle
+   * @typedef {{at: number, sources: Array<object>, sourcesJson: string,
+   *   buckets: Bucket[][], gzip: Map<string, Promise<ByteBundle>>}} FiresEntry
+   */
+  /** @type {?FiresEntry} */
   let mem = null;
   let diskChecked = false;
-  /** @type {?Promise<?{at: number, sources: Array<object>, fires: Array<object>}>} single-flight refresh */
+  /** @type {?Promise<?FiresEntry>} single-flight refresh */
   let inflight = null;
   /** @type {?{at: number, transactions: ?{used: number, limit: number}}} mapkey_status cache */
   let statusCache = null;
   /** @type {?Promise<?{used: number, limit: number}>} */
   let statusInflight = null;
 
-  const mapKey = () => String(process.env.FIRMS_MAP_KEY || '').trim();
+  const mapKey = () => String((options.getKey ? options.getKey() : process.env.FIRMS_MAP_KEY) || '').trim();
+
+  const bundle = (chunks) => ({ chunks, length: chunks.reduce((sum, chunk) => sum + chunk.length, 0) });
+
+  /** Error text safe to log: the key is never echoed. */
+  function safeMessage(err, key) {
+    let message = String(err?.message || err || 'error');
+    if (key) message = message.split(key).join('[redacted]').split(encodeURIComponent(key)).join('[redacted]');
+    return message.slice(0, 200);
+  }
+
+  async function gzipChunks(chunks) {
+    const out = [];
+    await pipeline(
+      Readable.from(chunks),
+      zlib.createGzip({ level: 6 }),
+      new Writable({ write(chunk, _encoding, callback) { out.push(chunk); callback(); } }),
+    );
+    return bundle(out);
+  }
+
+  function makeEntry(at, sources, buckets) {
+    return { at, sources, sourcesJson: JSON.stringify(sources), buckets, gzip: new Map() };
+  }
 
   async function readDiskOnce() {
-    if (diskChecked) return;
+    if (diskChecked || !CACHE_DIR) return;
     diskChecked = true;
     try {
-      const parsed = JSON.parse(await fsp.readFile(CACHE_PATH, 'utf8'));
-      if (Number.isFinite(parsed?.at) && Array.isArray(parsed?.sources) && Array.isArray(parsed?.fires)) {
-        mem = parsed;
-      }
+      const meta = JSON.parse(await fsp.readFile(META_PATH, 'utf8'));
+      const data = zlib.gunzipSync(await fsp.readFile(DATA_PATH));
+      if (!Number.isFinite(meta?.at) || !Array.isArray(meta?.sources) || !Array.isArray(meta?.index)) return;
+      let offset = 0;
+      const buckets = meta.index.map((list) => list.map(([ms, count, length]) => {
+        const bucket = { ms, count, buf: data.subarray(offset, offset + length) };
+        offset += length;
+        return bucket;
+      }));
+      if (offset !== data.length) return;
+      mem = makeEntry(meta.at, meta.sources, buckets);
     } catch { /* no disk cache yet */ }
   }
 
   async function writeDisk(entry) {
+    if (!CACHE_DIR) return;
     try {
+      const flat = entry.buckets.flat().map((bucket) => bucket.buf);
       await fsp.mkdir(CACHE_DIR, { recursive: true });
-      await fsp.writeFile(CACHE_PATH, JSON.stringify(entry), 'utf8');
+      await fsp.writeFile(DATA_PATH, zlib.gzipSync(Buffer.concat(flat)));
+      await fsp.writeFile(META_PATH, JSON.stringify({
+        at: entry.at,
+        sources: entry.sources,
+        index: entry.buckets.map((list) => list.map((bucket) => [bucket.ms, bucket.count, bucket.buf.length])),
+      }), 'utf8');
     } catch (err) {
       console.warn('[firms-proxy] cache write failed:', err?.message || err);
     }
   }
 
   /**
-   * Fetch + parse one FIRMS source. Throws on HTTP error or a non-CSV body
-   * (FIRMS reports errors as HTML/plain text, never CSV). Never log the URL —
-   * it embeds the MAP_KEY.
+   * Stream one FIRMS source into per-minute serialized buckets. Nothing is
+   * committed unless the whole source parses within its limits, so a failed
+   * source leaves no partial data behind. Never log the URL — it embeds the
+   * MAP_KEY.
+   * @returns {Promise<{buckets: Bucket[], kept: number}>} Buckets ascending by time.
    */
-  async function fetchSource(key, source) {
+  async function ingestSource(key, source, nowMs) {
     const url = `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${encodeURIComponent(key)}/${source}/world/2`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const records = parseFirmsCsv(await res.text());
-    if (records === null) throw new Error('non-CSV upstream response');
-    return records;
+    const res = await fetchImpl(url, { signal: AbortSignal.timeout(LIMITS.timeoutMs) });
+    if (!res.ok) {
+      try { await res.body?.cancel?.(); } catch { /* no-op */ }
+      throw new Error(`HTTP ${res.status}`);
+    }
+    if (!res.body) throw new Error('empty upstream body');
+    const declared = Number(res.headers?.get?.('content-length'));
+    if (Number.isFinite(declared) && declared > LIMITS.maxBytes) {
+      try { await res.body.cancel?.(); } catch { /* no-op */ }
+      throw new Error('Upstream byte limit exceeded');
+    }
+    /** @type {Map<number, {count: number, text: string}>} */
+    const staging = new Map();
+    const summary = await streamFirmsCsv(res.body, {
+      nowMs,
+      maxBytes: LIMITS.maxBytes,
+      maxRows: LIMITS.maxRows,
+      maxRecords: LIMITS.maxRecords,
+      onRecord: (record, acqMs) => {
+        const json = JSON.stringify(record);
+        const slot = staging.get(acqMs);
+        if (slot) {
+          slot.text += `,${json}`;
+          slot.count += 1;
+        } else {
+          staging.set(acqMs, { count: 1, text: json });
+        }
+      },
+    });
+    const buckets = [...staging.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([ms, slot]) => ({ ms, count: slot.count, buf: Buffer.from(slot.text) }));
+    return { buckets, kept: summary.kept };
   }
 
   /**
@@ -2093,45 +2211,106 @@ function firmsProxy() {
    * serve stale.
    */
   async function refreshUpstream(key) {
-    const now = Date.now();
+    const nowMs = clock();
     const sources = [];
-    const fires = [];
+    const buckets = [];
     for (const source of SOURCES) {
       try {
-        const records = filterTrailing24h(await fetchSource(key, source), now);
-        sources.push({ source, count: records.length, ok: true });
-        // NOT fires.push(...records): spread passes each record as an argument,
-        // and a world/2 VIIRS pull exceeds V8's argument limit (~125k) at
-        // ~131k records — RangeError, and the whole source is silently dropped.
-        for (const record of records) fires.push(record);
+        const result = await ingestSource(key, source, nowMs);
+        sources.push({ source, count: result.kept, ok: true });
+        buckets.push(result.buckets);
       } catch (err) {
-        console.warn(`[firms-proxy] ${source} fetch failed:`, err?.message || err);
+        console.warn(`[firms-proxy] ${source} fetch failed:`, safeMessage(err, key));
         sources.push({ source, count: 0, ok: false });
+        buckets.push([]);
       }
     }
     if (!sources.some((s) => s.ok)) throw new Error('all FIRMS sources failed');
-    return { at: now, sources, fires };
+    return makeEntry(nowMs, sources, buckets);
   }
 
   /**
-   * Cache entry → response payload. Fires are RE-filtered to the trailing
-   * 24 h at serve time so a stale cache never serves >24h-old detections.
+   * The rolling-window view of an entry at `nowMs`: the surviving buckets (by
+   * reference, per source in source order) and the live detection count.
    */
-  function buildPayload(entry, stale) {
-    const fires = filterTrailing24h(entry.fires, Date.now());
-    return {
-      fetchedAt: entry.at,
-      stale,
-      ttlMs: TTL_MS,
-      sources: entry.sources,
-      count: fires.length,
-      fires,
+  function selectWindow(entry, nowMs) {
+    const { oldest, newest } = trailingWindow(nowMs);
+    const picked = [];
+    const signature = [];
+    let count = 0;
+    for (const list of entry.buckets) {
+      let start = 0;
+      while (start < list.length && list[start].ms < oldest) start += 1;
+      let end = list.length;
+      while (end > start && list[end - 1].ms > newest) end -= 1;
+      signature.push(`${start}-${end}`);
+      for (let i = start; i < end; i += 1) {
+        picked.push(list[i].buf);
+        count += list[i].count;
+      }
+    }
+    return { picked, count, signature: signature.join(',') };
+  }
+
+  /** Response chunks for a window: a small head, the surviving buckets, a tail. */
+  function windowChunks(entry, window, stale) {
+    const head = Buffer.from(
+      `{"fetchedAt":${entry.at},"stale":${stale},"ttlMs":${TTL_MS},"sources":${entry.sourcesJson},"count":${window.count},"fires":[`,
+    );
+    const chunks = [head];
+    window.picked.forEach((buf, index) => {
+      if (index) chunks.push(COMMA);
+      chunks.push(buf);
+    });
+    chunks.push(TAIL);
+    return chunks;
+  }
+
+  /** Gzip for one distinct surviving window, built once and shared (last few kept). */
+  function gzipFor(entry, window, stale, chunks) {
+    const key = `${stale}|${window.signature}`;
+    let pending = entry.gzip.get(key);
+    if (!pending) {
+      pending = gzipChunks(chunks);
+      pending.catch(() => entry.gzip.delete(key));
+      entry.gzip.set(key, pending);
+      while (entry.gzip.size > GZIP_CACHE_MAX) entry.gzip.delete(entry.gzip.keys().next().value);
+    }
+    return pending;
+  }
+
+  function acceptsGzip(req) {
+    const header = String(req.headers?.['accept-encoding'] || '');
+    return header.split(',').some((part) => {
+      const [token, ...params] = part.trim().toLowerCase().split(';');
+      if (token !== 'gzip' && token !== '*') return false;
+      const q = params.map((p) => p.trim()).find((p) => p.startsWith('q='));
+      return q === undefined || Number(q.slice(2)) > 0;
+    });
+  }
+
+  /** Pipe the rolling-window bytes to the client; gzip only when accepted and never re-compressed. */
+  async function sendEntry(req, res, entry, stale) {
+    const window = selectWindow(entry, clock());
+    const rawChunks = windowChunks(entry, window, stale);
+    const useGzip = acceptsGzip(req);
+    const payload = useGzip
+      ? await gzipFor(entry, window, stale, rawChunks)
+      : bundle(rawChunks);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      Vary: 'Accept-Encoding',
+      'Content-Length': String(payload.length),
     };
+    if (useGzip) headers['Content-Encoding'] = 'gzip';
+    res.writeHead(200, headers);
+    await pipeline(Readable.from(payload.chunks), res);
   }
 
   /** mapkey_status transactions, cached 5 min, best-effort (null on failure). */
   function getTransactions(key) {
-    const now = Date.now();
+    const now = clock();
     if (statusCache && now - statusCache.at < STATUS_TTL_MS) {
       return Promise.resolve(statusCache.transactions);
     }
@@ -2139,19 +2318,19 @@ function firmsProxy() {
       statusInflight = (async () => {
         try {
           const url = `https://firms.modaps.eosdis.nasa.gov/mapserver/mapkey_status/?MAP_KEY=${encodeURIComponent(key)}`;
-          const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+          const res = await fetchImpl(url, { signal: AbortSignal.timeout(10_000) });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const body = await res.json();
           const used = Number(body?.current_transactions);
           const limit = Number(body?.transaction_limit);
           return Number.isFinite(used) && Number.isFinite(limit) ? { used, limit } : null;
         } catch (err) {
-          console.warn('[firms-proxy] mapkey status failed:', err?.message || err);
+          console.warn('[firms-proxy] mapkey status failed:', safeMessage(err, key));
           return null;
         }
       })()
         .then((transactions) => {
-          statusCache = { at: Date.now(), transactions };
+          statusCache = { at: clock(), transactions };
           return transactions;
         })
         .finally(() => { statusInflight = null; });
@@ -2160,74 +2339,79 @@ function firmsProxy() {
   }
 
   const install = (server) => {
-      server.middlewares.use('/api/firms', async (req, res) => {
-        const sendJson = (status, obj) => {
-          if (res.headersSent) return;
-          res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-          res.end(JSON.stringify(obj));
-        };
-        try {
-          const subPath = String(req.url || '').split('?')[0];
-          const key = mapKey();
-          await readDiskOnce();
+    server.middlewares.use('/api/firms', async (req, res) => {
+      const sendJson = (status, obj, extra = {}) => {
+        if (res.headersSent) return;
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...extra });
+        res.end(JSON.stringify(obj));
+      };
+      try {
+        const subPath = String(req.url || '').split('?')[0];
+        const key = mapKey();
+        await readDiskOnce();
 
-          if (subPath === '/status') {
-            if (!key) {
-              sendJson(200, { hasKey: false, lastFetch: null, count: null, stale: false, ttlMs: TTL_MS, transactions: null });
-              return;
-            }
-            const transactions = await getTransactions(key);
-            sendJson(200, {
-              hasKey: true,
-              lastFetch: mem ? mem.at : null,
-              count: mem ? mem.fires.length : null,
-              stale: mem ? Date.now() - mem.at >= TTL_MS : false,
-              ttlMs: TTL_MS,
-              transactions,
-            });
-            return;
-          }
-
+        if (subPath === '/status') {
           if (!key) {
-            sendJson(503, { error: 'no_key' });
+            sendJson(200, { hasKey: false, lastFetch: null, count: null, stale: false, ttlMs: TTL_MS, transactions: null });
             return;
           }
-
-          const entry = mem;
-          if (entry && Date.now() - entry.at < TTL_MS) {
-            sendJson(200, buildPayload(entry, false));
-            return;
-          }
-          // Stale or missing → refresh, single-flight (concurrent requests
-          // share one upstream pass). Capture the promise locally BEFORE
-          // awaiting: the .finally() nulls `inflight` the moment it settles.
-          if (!inflight) {
-            inflight = refreshUpstream(key)
-              .then(async (fresh) => {
-                mem = fresh;
-                await writeDisk(fresh);
-                return fresh;
-              })
-              .catch((err) => {
-                console.warn(`[firms-proxy] refresh failed (${err?.message || err}) — serving cache if any`);
-                return null;
-              })
-              .finally(() => { inflight = null; });
-          }
-          const pending = inflight;
-          const fresh = await pending;
-          if (fresh) {
-            sendJson(200, buildPayload(fresh, false));
-          } else if (entry) {
-            sendJson(200, buildPayload(entry, true)); // upstream down — stale beats empty
-          } else {
-            sendJson(502, { error: 'firms fetch failed and no cache available' });
-          }
-        } catch (err) {
-          console.warn('[firms-proxy] error:', err?.message || err);
-          sendJson(500, { error: 'firms proxy error' });
+          const transactions = await getTransactions(key);
+          sendJson(200, {
+            hasKey: true,
+            lastFetch: mem ? mem.at : null,
+            count: mem ? selectWindow(mem, clock()).count : null,
+            stale: mem ? clock() - mem.at >= TTL_MS : false,
+            ttlMs: TTL_MS,
+            transactions,
+          });
+          return;
         }
-      });
+
+        if (!key) {
+          sendJson(503, { error: 'no_key' });
+          return;
+        }
+
+        // Normal app use is one request per 10 min per tab; this only stops runaway callers.
+        if (!limiter(String(req.socket?.remoteAddress || 'local'))) {
+          sendJson(429, { error: 'rate_limited' }, { 'Retry-After': '30' });
+          return;
+        }
+
+        const entry = mem;
+        if (entry && clock() - entry.at < TTL_MS) {
+          await sendEntry(req, res, entry, false);
+          return;
+        }
+        // Stale or missing → refresh, single-flight (concurrent requests
+        // share one upstream pass). Capture the promise locally BEFORE
+        // awaiting: the .finally() nulls `inflight` the moment it settles.
+        if (!inflight) {
+          inflight = refreshUpstream(key)
+            .then(async (fresh) => {
+              mem = fresh;
+              await writeDisk(fresh);
+              return fresh;
+            })
+            .catch((err) => {
+              console.warn(`[firms-proxy] refresh failed (${safeMessage(err, key)}) — serving cache if any`);
+              return null;
+            })
+            .finally(() => { inflight = null; });
+        }
+        const fresh = await inflight;
+        if (fresh) {
+          await sendEntry(req, res, fresh, false);
+        } else if (entry) {
+          await sendEntry(req, res, entry, true); // upstream down — stale beats empty, still clamped to 24 h
+        } else {
+          sendJson(502, { error: 'firms fetch failed and no cache available' });
+        }
+      } catch (err) {
+        console.warn('[firms-proxy] error:', safeMessage(err, mapKey()));
+        sendJson(500, { error: 'firms proxy error' });
+      }
+    });
   };
   return {
     name: 'firms-proxy',

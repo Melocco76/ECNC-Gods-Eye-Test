@@ -59,11 +59,30 @@ export function parseFirmsCsv(text) {
   if (!isLikelyCsv(text)) return null;
   const lines = text.split('\n');
 
-  // Locate the header (first non-empty line) and build a column index so the
-  // parser survives column reordering across FIRMS product versions.
+  // Locate the header (first non-empty line); the row parser builds a column
+  // index so it survives column reordering across FIRMS product versions.
   let headerIndex = 0;
   while (headerIndex < lines.length && !lines[headerIndex].trim()) headerIndex += 1;
-  const header = lines[headerIndex].trim().toLowerCase().split(',').map((f) => f.trim());
+  const parseRow = createFirmsRowParser(lines[headerIndex]);
+
+  const records = [];
+  for (let i = headerIndex + 1; i < lines.length; i += 1) {
+    const record = parseRow(lines[i]);
+    if (record) records.push(record);
+  }
+  return records;
+}
+
+/**
+ * Build a single-row parser from a CSV header line. The returned function maps
+ * one raw data line to a record, or null for blank/malformed rows (too few
+ * columns, non-finite coordinates). Shared by the whole-text and streaming
+ * parsers so both produce byte-identical records.
+ * @param {string} headerLine - The CSV header line.
+ * @returns {(line: string) => ?Object}
+ */
+export function createFirmsRowParser(headerLine) {
+  const header = String(headerLine).trim().toLowerCase().split(',').map((f) => f.trim());
   const col = new Map(header.map((name, i) => [name, i]));
   const iLat = col.get('latitude');
   const iLon = col.get('longitude');
@@ -77,17 +96,16 @@ export function parseFirmsCsv(text) {
   const iSatellite = col.get('satellite');
   const iInstrument = col.get('instrument');
 
-  const records = [];
-  for (let i = headerIndex + 1; i < lines.length; i += 1) {
-    const line = lines[i].trim();
-    if (!line) continue;
+  return (rawLine) => {
+    const line = rawLine.trim();
+    if (!line) return null;
     const parts = line.split(',');
-    if (parts.length < header.length) continue; // malformed row — skip
+    if (parts.length < header.length) return null; // malformed row — skip
     const lat = Number(parts[iLat]);
     const lon = Number(parts[iLon]);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
 
-    records.push({
+    return {
       lat,
       lon,
       frp: finiteOrZero(parts[iFrp]),
@@ -101,9 +119,105 @@ export function parseFirmsCsv(text) {
       acqTime: cell(parts, iAcqTime), // NOT zero-padded — kept verbatim
       satellite: cell(parts, iSatellite),
       instrument: cell(parts, iInstrument),
-    });
+    };
+  };
+}
+
+/** Failure raised by {@link streamFirmsCsv}; `code` names the reason. */
+export class FirmsIngestError extends Error {
+  /** @param {'NOT_CSV'|'BYTES_CAP'|'ROWS_CAP'|'RECORDS_CAP'} code @param {string} message */
+  constructor(code, message) {
+    super(message);
+    this.name = 'FirmsIngestError';
+    this.code = code;
   }
-  return records;
+}
+
+/**
+ * Incrementally parse a FIRMS area CSV from an async-iterable body (a fetch
+ * `response.body`, a Node stream, or any async generator of byte chunks).
+ * Chunk boundaries are arbitrary: a header, a row, or a multi-byte character
+ * may be split across chunks. Only the current partial line is buffered — the
+ * raw CSV is never held. Rows are filtered to the trailing-24 h window
+ * ({@link filterTrailing24h} semantics) as they arrive; each kept record is
+ * handed to `onRecord`.
+ *
+ * Throws {@link FirmsIngestError}: NOT_CSV when the first non-blank line is not
+ * a FIRMS header (HTML/plain-text upstream errors), BYTES_CAP / ROWS_CAP /
+ * RECORDS_CAP when a limit is exceeded. Breaking out of the `for await` cancels
+ * the underlying stream. Error messages never contain URLs or keys.
+ *
+ * @param {AsyncIterable<Uint8Array>} body - Byte chunks.
+ * @param {Object} options
+ * @param {number} options.nowMs - Reference time for the trailing window.
+ * @param {(record: Object, acqMs: number) => void} options.onRecord - Receives each kept record and its acquisition epoch ms.
+ * @param {number} [options.maxBytes] - Streamed-byte ceiling.
+ * @param {number} [options.maxRows] - Raw data-row ceiling.
+ * @param {number} [options.maxRecords] - Kept-record ceiling.
+ * @returns {Promise<{rows: number, kept: number, bytes: number}>}
+ */
+export async function streamFirmsCsv(body, {
+  nowMs,
+  onRecord,
+  maxBytes = Infinity,
+  maxRows = Infinity,
+  maxRecords = Infinity,
+}) {
+  const { oldest, newest } = trailingWindow(nowMs);
+  const memo = new Map();
+  const decoder = new TextDecoder();
+  let parseRow = null;
+  let carry = '';
+  let bytes = 0;
+  let rows = 0;
+  let kept = 0;
+
+  const handleLine = (line) => {
+    if (!parseRow) {
+      const header = line.trim();
+      if (!header) return;
+      if (!isLikelyCsv(`${header}\n`)) throw new FirmsIngestError('NOT_CSV', 'Upstream response is not FIRMS CSV');
+      parseRow = createFirmsRowParser(header);
+      return;
+    }
+    if (!line.trim()) return;
+    rows += 1;
+    if (rows > maxRows) throw new FirmsIngestError('ROWS_CAP', 'Upstream row limit exceeded');
+    const record = parseRow(line);
+    if (!record) return;
+    const key = `${record.acqDate}:${record.acqTime}`;
+    let ms = memo.get(key);
+    if (ms === undefined) {
+      ms = acquisitionMsUtc(record.acqDate, record.acqTime);
+      memo.set(key, ms);
+    }
+    if (!Number.isFinite(ms) || ms < oldest || ms > newest) return;
+    kept += 1;
+    if (kept > maxRecords) throw new FirmsIngestError('RECORDS_CAP', 'Upstream record limit exceeded');
+    onRecord(record, ms);
+  };
+
+  const consume = (text) => {
+    const buffer = carry + text;
+    let start = 0;
+    let newline = buffer.indexOf('\n', start);
+    while (newline !== -1) {
+      handleLine(buffer.slice(start, newline));
+      start = newline + 1;
+      newline = buffer.indexOf('\n', start);
+    }
+    carry = buffer.slice(start);
+  };
+
+  for await (const chunk of body) {
+    bytes += chunk.byteLength;
+    if (bytes > maxBytes) throw new FirmsIngestError('BYTES_CAP', 'Upstream byte limit exceeded');
+    consume(decoder.decode(chunk, { stream: true }));
+  }
+  consume(decoder.decode());
+  if (carry) handleLine(carry);
+  if (!parseRow) throw new FirmsIngestError('NOT_CSV', 'Upstream response is not FIRMS CSV');
+  return { rows, kept, bytes };
 }
 
 /**
@@ -128,6 +242,17 @@ export function acquisitionMsUtc(acqDate, acqTime) {
 }
 
 /**
+ * The inclusive acquisition-time window every FIRMS consumer applies: the
+ * trailing 24 h plus a 2 h forward slack. One definition, shared by the batch
+ * filter, the streaming ingest and the proxy's serve-time cutoff.
+ * @param {number} nowMs - Reference epoch milliseconds.
+ * @returns {{oldest: number, newest: number}}
+ */
+export function trailingWindow(nowMs) {
+  return { oldest: nowMs - WINDOW_MS, newest: nowMs + FORWARD_SLACK_MS };
+}
+
+/**
  * Keep only records acquired within `[nowMs − 24 h, nowMs + 2 h]` (inclusive).
  * The 2 h forward slack absorbs upstream/local clock skew; records with an
  * unparseable acquisition time are dropped. Timestamps are memoized per
@@ -138,8 +263,7 @@ export function acquisitionMsUtc(acqDate, acqTime) {
  */
 export function filterTrailing24h(records, nowMs) {
   if (!Array.isArray(records) || !Number.isFinite(nowMs)) return [];
-  const oldest = nowMs - WINDOW_MS;
-  const newest = nowMs + FORWARD_SLACK_MS;
+  const { oldest, newest } = trailingWindow(nowMs);
   const memo = new Map();
   return records.filter((record) => {
     const key = `${record.acqDate}:${record.acqTime}`;
