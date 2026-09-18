@@ -33,9 +33,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import https from 'node:https';
-import { lookup as lookupDns, resolve4 as resolve4Dns, resolve6 as resolve6Dns } from 'node:dns/promises';
-import { getDefaultResultOrder as dnsGetDefaultResultOrder } from 'node:dns';
-import { connect as netConnect, getDefaultAutoSelectFamily, getDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
+import { lookup as lookupDns } from 'node:dns/promises';
 import { directionToHeading } from './src/data/directionText.js';
 import {
   isValidTileCoord as isValidTomTomTile,
@@ -1473,76 +1471,6 @@ async function getOpenSkyToken() {
           `causeName=${cause?.name || 'unknown'}`,
           `causeMessage=${cause?.message || 'unavailable'}`
         );
-        // TEMPORARY diagnostic (address-family / DNS resolution only) to
-        // determine whether the Cloud Run connect-timeout is IPv4/IPv6 or
-        // DNS-resolution related, before any networking infrastructure
-        // change is made. Logs hostname/address-family facts only — never
-        // secrets, tokens, headers, or request bodies. Remove once the
-        // network-path investigation concludes.
-        (async () => {
-          const HOST = 'auth.opensky-network.org';
-          try {
-            const all = await lookupDns(HOST, { all: true });
-            console.warn(
-              '[OpenSky][net-diag] dns.lookup(all):',
-              JSON.stringify(all.map((r) => ({ address: r.address, family: r.family })))
-            );
-          } catch (diagErr) {
-            console.warn('[OpenSky][net-diag] dns.lookup(all) failed:', diagErr?.code || diagErr?.message || String(diagErr));
-          }
-          try {
-            const v4 = await resolve4Dns(HOST);
-            console.warn('[OpenSky][net-diag] dns.resolve4:', JSON.stringify(v4));
-          } catch (diagErr) {
-            console.warn('[OpenSky][net-diag] dns.resolve4 failed:', diagErr?.code || diagErr?.message || String(diagErr));
-          }
-          try {
-            const v6 = await resolve6Dns(HOST);
-            console.warn('[OpenSky][net-diag] dns.resolve6:', JSON.stringify(v6));
-          } catch (diagErr) {
-            console.warn('[OpenSky][net-diag] dns.resolve6: no AAAA record or lookup failed —', diagErr?.code || diagErr?.message || String(diagErr));
-          }
-          try {
-            console.warn(
-              '[OpenSky][net-diag] node network defaults:',
-              `dnsResultOrder=${dnsGetDefaultResultOrder()}`,
-              `autoSelectFamily=${getDefaultAutoSelectFamily()}`,
-              `autoSelectFamilyAttemptTimeout=${getDefaultAutoSelectFamilyAttemptTimeout()}`
-            );
-          } catch (diagErr) {
-            console.warn('[OpenSky][net-diag] node network defaults lookup failed:', diagErr?.message || String(diagErr));
-          }
-          // TEMPORARY: raw TCP-only connect test (no TLS, no HTTP, no data
-          // sent) against the resolved OpenSky auth IP, to isolate whether
-          // the failure is at the TCP layer or above it. Socket is always
-          // destroyed after connect/timeout/error. Remove once the network
-          // path investigation concludes.
-          try {
-            const tcpStart = Date.now();
-            const { result: tcpConnectResult, err: tcpErr } = await new Promise((resolve) => {
-              const socket = netConnect({ host: '194.209.200.34', port: 443, timeout: 10000 });
-              const finish = (result, err) => {
-                socket.removeAllListeners();
-                socket.destroy();
-                resolve({ result, err: err || null });
-              };
-              socket.once('connect', () => finish('connected'));
-              socket.once('timeout', () => finish('timeout'));
-              socket.once('error', (err) => finish('error', err));
-            });
-            const elapsedMs = Date.now() - tcpStart;
-            console.warn(
-              '[OpenSky][net-diag] raw TCP connect 194.209.200.34:443:',
-              `tcpConnectResult=${tcpConnectResult}`,
-              `elapsedMs=${elapsedMs}`,
-              `errorCode=${tcpErr?.code || 'none'}`,
-              `errorName=${tcpErr?.name || 'none'}`,
-              `errorMessage=${tcpErr?.message || 'none'}`
-            );
-          } catch (diagErr) {
-            console.warn('[OpenSky][net-diag] raw TCP connect diagnostic failed:', diagErr?.code || diagErr?.message || String(diagErr));
-          }
-        })();
         _openskyAuthWarned = true;
       }
       _openskyToken = null;
@@ -3056,6 +2984,22 @@ function openSkyProxy() {
       server.middlewares.use('/api/opensky', async (req, res) => {
         try {
           const requestedMode = normalizeOpenSkyAuthMode(process.env.OPENSKY_AUTH_MODE);
+          // Opt-in escape hatch for a network path where OpenSky itself is
+          // unreachable (e.g. Cloud Run's default egress to
+          // auth.opensky-network.org / opensky-network.org): skip both the
+          // OAuth token acquisition and the anonymous states/all fetch
+          // entirely and go straight to the existing adsb.lol regional
+          // fallback. Unset/false preserves current behavior exactly — this
+          // never affects local development by default.
+          if (String(process.env.GEV_DISABLE_OPENSKY || '').trim() === '1') {
+            if (await serveAdsbLolPointFallback(req, res, requestedMode, 'opensky_disabled_regional_fallback')) return;
+            res.writeHead(
+              502,
+              buildOpenSkyHeaders({ cacheStatus: 'MISS', requestedMode, usedMode: 'error', reason: 'opensky_disabled_no_fallback' })
+            );
+            res.end(JSON.stringify({ error: 'OpenSky proxy error' }));
+            return;
+          }
           const now = Date.now();
           const inCooldown = now < _openskyCooldownUntil;
           // Fresh-enough cache (adaptive TTL) OR any cache during a 429
