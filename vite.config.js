@@ -4548,9 +4548,9 @@ function cctvProxy() {
     };
   };
 
-  /** Fetch a Google Street View static image as a fallback frame. Requires GOOGLE_MAPS_API_KEY. */
+  /** Fetch a Google Street View static image as a fallback frame. Requires GOOGLE_MAPS_API_KEY (or GOOGLE_MAPS_SERVER_KEY). */
   const streetViewFallback = async ({ lat, lon, heading, fov, pitch }) => {
-    const streetViewKey = process.env.GOOGLE_MAPS_API_KEY;
+    const streetViewKey = resolveGoogleMapsServerKey();
     if (!streetViewKey || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
     try {
       const sv = new URL('https://maps.googleapis.com/maps/api/streetview');
@@ -5365,6 +5365,17 @@ function readRequestBody(req, maxBytes = 1024 * 1024) {
 }
 
 /**
+ * Resolve the server-side Google Maps/Places key: GOOGLE_MAPS_SERVER_KEY (a
+ * dedicated, non-browser-restricted key) takes precedence, falling back to
+ * the legacy shared GOOGLE_MAPS_API_KEY so existing single-key setups keep
+ * working unchanged. Never read anywhere near the client `define` block —
+ * this value must never reach the browser bundle.
+ */
+function resolveGoogleMapsServerKey() {
+  return process.env.GOOGLE_MAPS_SERVER_KEY || process.env.GOOGLE_MAPS_API_KEY;
+}
+
+/**
  * Optional Google place context is an empty capability when no key is present,
  * not a server outage. Returning 200 keeps a deliberately keyless session out
  * of the browser error console while preserving an explicit configured flag.
@@ -5397,7 +5408,7 @@ export function googlePlacesContextProxy() {
       // Keyless place context has no provider cost, so it resolves before the
       // paid-endpoint limiter can consume or exhaust quota (mirrors the HUD
       // summary route).
-      const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+      const apiKey = resolveGoogleMapsServerKey();
       const keyless = keylessGooglePlacesResponse(apiKey);
       if (keyless) {
         res.statusCode = keyless.statusCode;
@@ -5516,7 +5527,7 @@ export function googlePlacesContextProxy() {
       // Keyless place context has no provider cost, so it resolves before the
       // paid-endpoint limiter can consume or exhaust quota (mirrors the HUD
       // summary route).
-      const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+      const apiKey = resolveGoogleMapsServerKey();
       const keyless = keylessGooglePlacesResponse(apiKey);
       if (keyless) {
         res.statusCode = keyless.statusCode;
@@ -7768,8 +7779,12 @@ export default defineConfig(({ mode }) => {
       },
     },
     // Expose selected API keys to the browser via import.meta.env.*
+    // GOOGLE_MAPS_BROWSER_KEY (a dedicated, HTTP-referrer-restricted key) is
+    // preferred; the legacy shared GOOGLE_MAPS_API_KEY is the fallback so
+    // existing single-key setups keep working unchanged. GOOGLE_MAPS_SERVER_KEY
+    // is intentionally absent from this block — it must never reach the browser.
     define: {
-      'import.meta.env.GOOGLE_MAPS_API_KEY': JSON.stringify(env.GOOGLE_MAPS_API_KEY),
+      'import.meta.env.GOOGLE_MAPS_API_KEY': JSON.stringify(env.GOOGLE_MAPS_BROWSER_KEY || env.GOOGLE_MAPS_API_KEY),
       'import.meta.env.CESIUM_ION_TOKEN': JSON.stringify(env.CESIUM_ION_TOKEN),
     },
     build: {
