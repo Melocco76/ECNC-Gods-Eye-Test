@@ -224,6 +224,16 @@ function harness({
     await h.controller.pending;
     await settle();
   };
+  h.timerDelays = () => [...h.timers.values()].map((timer) => timer.ms);
+  h.fireMs = async (ms) => {
+    for (const [id, timer] of [...h.timers]) {
+      if (timer.ms !== ms) continue;
+      h.timers.delete(id);
+      timer.fn();
+    }
+    await h.controller.pending;
+    await settle();
+  };
   return h;
 }
 
@@ -272,6 +282,137 @@ test('a meaningful move refetches after the settle debounce, not during motion',
   await h.fireTimers();
   assert.equal(h.fetches.length, 2);
   assert.match(h.fetches[1], /latitude=49\.25660/);
+});
+
+// ── Minimum-gap edge case: a due refresh blocked only by the 15 s gap is deferred ──
+const FAR = (extra = 0) => ({ latitude: PARIS.latitude + 0.4 + extra, longitude: PARIS.longitude });
+
+async function intermediateThenBlocked(h, elapsedMs = 4_000) {
+  await h.check(); // moveEnd at an intermediate point → fetch #1
+  h.now += elapsedMs;
+  h.center = FAR();
+  h.controller.onCameraSettled();
+  await h.fireMs(MAP_WEATHER_SETTLE_MS); // destination moveEnd, inside the 15 s gap
+}
+
+test('a due refresh blocked only by the minimum gap arms exactly one deferred retry', async () => {
+  const h = harness();
+  await intermediateThenBlocked(h, 4_000);
+  assert.equal(h.fetches.length, 1, 'the gap still blocks the immediate fetch');
+  const remaining = MAP_WEATHER_MIN_FETCH_GAP_MS - 4_000;
+  assert.equal(h.timerDelays().filter((ms) => ms === remaining).length, 1);
+
+  // Repeated blocked checks (more settles, visibility, expiry-style re-checks) never stack timers.
+  for (let i = 0; i < 5; i += 1) {
+    h.now += 100;
+    h.controller.onCameraSettled();
+    await h.fireMs(MAP_WEATHER_SETTLE_MS);
+    h.controller.onVisibilityChange();
+  }
+  assert.equal(h.timerDelays().filter((ms) => ms === remaining).length, 1);
+  assert.equal(h.fetches.length, 1);
+});
+
+test('the deferred retry fires after the remaining gap, uses the LATEST centre, and fetches once', async () => {
+  const h = harness();
+  await intermediateThenBlocked(h, 4_000);
+  const remaining = MAP_WEATHER_MIN_FETCH_GAP_MS - 4_000;
+
+  // The camera keeps settling further along before the retry fires.
+  h.center = FAR(0.1);
+  h.now += remaining;
+  await h.fireMs(remaining);
+
+  assert.equal(h.fetches.length, 2, 'exactly one fetch after the deferred retry');
+  assert.equal(h.fetches[1], `/api/weather-effects?latitude=${(PARIS.latitude + 0.5).toFixed(5)}&longitude=2.35220`);
+  assert.equal(h.controller.gapTimer, null);
+
+  // No loop: only the 5-minute expiry timer remains, and nothing else fetches.
+  assert.deepEqual(h.timerDelays(), [MAP_WEATHER_REFRESH_MS]);
+  h.controller.onCameraSettled();
+  await h.fireMs(MAP_WEATHER_SETTLE_MS);
+  assert.equal(h.fetches.length, 2);
+});
+
+test('the retry recomputes due-ness: if the view came back near the data it does not fetch', async () => {
+  const h = harness();
+  await intermediateThenBlocked(h, 4_000);
+  h.center = PARIS;
+  h.now += MAP_WEATHER_MIN_FETCH_GAP_MS;
+  await h.fireMs(MAP_WEATHER_MIN_FETCH_GAP_MS - 4_000);
+  assert.equal(h.fetches.length, 1);
+  assert.equal(h.controller.gapTimer, null);
+  assert.equal(h.timerDelays().filter((ms) => ms < MAP_WEATHER_REFRESH_MS).length, 0, 'no lingering short timer');
+});
+
+test('expired data blocked only by the gap is also deferred', async () => {
+  const h = harness();
+  await h.check();
+  h.timers.clear();
+  h.now += MAP_WEATHER_REFRESH_MS + 1;
+  h.controller.state.fetchedAt = h.now - MAP_WEATHER_REFRESH_MS - 1;
+  h.controller.lastAttemptAt = h.now - 1_000; // an attempt (e.g. after settling) 1 s ago
+  h.controller.onCameraSettled();
+  await h.fireMs(MAP_WEATHER_SETTLE_MS);
+  assert.deepEqual(h.timerDelays(), [MAP_WEATHER_MIN_FETCH_GAP_MS - 1_000]);
+  h.now += MAP_WEATHER_MIN_FETCH_GAP_MS - 1_000;
+  await h.fireMs(MAP_WEATHER_MIN_FETCH_GAP_MS - 1_000);
+  assert.equal(h.fetches.length, 2);
+});
+
+test('closing the card cancels the deferred retry', async () => {
+  const h = harness();
+  await intermediateThenBlocked(h, 4_000);
+  assert.notEqual(h.controller.gapTimer, null);
+  h.controller.setOpen(false);
+  assert.equal(h.controller.gapTimer, null);
+  assert.equal(h.timers.size, 0);
+});
+
+test('hidden tab and cockpit mode suppress the deferred retry', async () => {
+  for (const flag of ['hidden', 'suppressed']) {
+    const h = harness();
+    await intermediateThenBlocked(h, 4_000);
+    const remaining = MAP_WEATHER_MIN_FETCH_GAP_MS - 4_000;
+    h[flag] = true;
+    assert.notEqual(h.controller.gapTimer, null, `${flag}: retry armed before suppression`);
+    h.now += remaining;
+    await h.fireMs(remaining);
+    assert.equal(h.fetches.length, 1, `${flag}: no fetch`);
+    assert.equal(h.controller.gapTimer, null, `${flag}: retry not left armed`);
+    assert.equal(h.timerDelays().filter((ms) => ms < MAP_WEATHER_REFRESH_MS).length, 0);
+  }
+});
+
+test('the deferred retry respects an in-flight request', async () => {
+  const h = harness();
+  await intermediateThenBlocked(h, 4_000);
+  const remaining = MAP_WEATHER_MIN_FETCH_GAP_MS - 4_000;
+  h.controller.pending = Promise.resolve(); // a request is already in flight
+  h.now += remaining;
+  await h.fireMs(remaining);
+  assert.equal(h.fetches.length, 1, 'no concurrent second fetch');
+});
+
+test('after a failure the backed-off retry owns the re-check; no gap timer is added', async () => {
+  let fail = false;
+  const h = harness({
+    respond: async () => {
+      if (fail) throw new Error('offline');
+      return okResponse();
+    },
+  });
+  await h.check();
+  fail = true;
+  h.now += MAP_WEATHER_REFRESH_MS + 1;
+  await h.check(); // failing refresh → backoff timer armed
+  const delaysAfterFailure = h.timerDelays();
+  h.center = FAR();
+  h.now += 1_000; // inside the gap
+  h.controller.onCameraSettled();
+  await h.fireMs(MAP_WEATHER_SETTLE_MS);
+  assert.equal(h.controller.gapTimer, null);
+  assert.deepEqual(h.timerDelays(), delaysAfterFailure);
 });
 
 test('failure keeps held data as STALE, fails quietly, and retries via one backed-off timer', async () => {

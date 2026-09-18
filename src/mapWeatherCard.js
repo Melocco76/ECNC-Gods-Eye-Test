@@ -155,6 +155,7 @@ export class MapWeatherCardController {
     this.abort = null;
     this.settleTimer = null;
     this.expiryTimer = null;
+    this.gapTimer = null;
     this.destroyed = false;
   }
 
@@ -185,6 +186,7 @@ export class MapWeatherCardController {
     if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer);
     this.settleTimer = null;
     this.expiryTimer = null;
+    this.clearGapRetry();
     this.abort?.abort();
     this.abort = null;
     this.pending = null;
@@ -212,23 +214,51 @@ export class MapWeatherCardController {
     }, delayMs);
   }
 
+  clearGapRetry() {
+    if (this.gapTimer !== null) this.clearTimer(this.gapTimer);
+    this.gapTimer = null;
+  }
+
+  /**
+   * One deferred re-check for a refresh that is due but blocked only by the
+   * minimum fetch gap. The timer carries no coordinates: check() recomputes
+   * due-ness from the latest view centre when it fires.
+   */
+  armGapRetry(delayMs) {
+    if (this.gapTimer !== null) return;
+    this.gapTimer = this.setTimer(() => {
+      this.gapTimer = null;
+      this.check();
+    }, Math.max(0, delayMs));
+  }
+
   check() {
-    if (this.destroyed || !this.open || this.pending || this.isHidden() || this.isSuppressed()) {
+    if (this.destroyed || !this.open || this.pending) return this.pending;
+    if (this.isHidden() || this.isSuppressed()) {
+      this.clearGapRetry();
       return this.pending;
     }
     const point = this.getCenter();
     const nowMs = this.now();
-    if (!mapWeatherRefreshDue({
+    const args = {
       nowMs,
       fetchedAt: this.state.fetchedAt,
       lastAttemptAt: this.lastAttemptAt,
       anchor: this.state.anchor,
       point,
       hasWeather: Boolean(this.state.weather),
-    })) {
+    };
+    if (!mapWeatherRefreshDue(args)) {
+      // A failure's own backed-off timer already re-checks with fresh
+      // coordinates, so the gap retry only covers the healthy path.
+      const gapLeftMs = this.lastAttemptAt + MAP_WEATHER_MIN_FETCH_GAP_MS - nowMs;
+      if (gapLeftMs > 0 && this.failures === 0 && mapWeatherRefreshDue({ ...args, lastAttemptAt: 0 })) {
+        this.armGapRetry(gapLeftMs);
+      }
       this.emit();
       return null;
     }
+    this.clearGapRetry();
     return this.fetchWeather(point, nowMs);
   }
 
