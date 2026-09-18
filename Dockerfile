@@ -25,6 +25,14 @@ RUN npm ci
 # style.css are consumed by `vite build` and are NOT copied into the runtime
 # stage below — their output is already baked into dist/ after this step).
 COPY . .
+
+# Optional build-time input for the browser-visible Google Maps key (see
+# vite.config.js's `define:` block — GOOGLE_MAPS_BROWSER_KEY falls back to
+# the legacy GOOGLE_MAPS_API_KEY). Supplied via `--build-arg` from a value
+# the caller sources securely (e.g. Cloud Build's Secret Manager
+# integration); never hardcoded here, never committed with a real value.
+# Absent by default, which preserves today's keyless build unchanged.
+ARG GOOGLE_MAPS_BROWSER_KEY
 RUN npm run build
 
 # ---------------------------------------------------------------------------
