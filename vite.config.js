@@ -33,7 +33,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import https from 'node:https';
-import { lookup as lookupDns } from 'node:dns/promises';
+import { lookup as lookupDns, resolve4 as resolve4Dns, resolve6 as resolve6Dns } from 'node:dns/promises';
+import { getDefaultResultOrder as dnsGetDefaultResultOrder } from 'node:dns';
+import { getDefaultAutoSelectFamily, getDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { directionToHeading } from './src/data/directionText.js';
 import {
   isValidTileCoord as isValidTomTomTile,
@@ -1471,6 +1473,46 @@ async function getOpenSkyToken() {
           `causeName=${cause?.name || 'unknown'}`,
           `causeMessage=${cause?.message || 'unavailable'}`
         );
+        // TEMPORARY diagnostic (address-family / DNS resolution only) to
+        // determine whether the Cloud Run connect-timeout is IPv4/IPv6 or
+        // DNS-resolution related, before any networking infrastructure
+        // change is made. Logs hostname/address-family facts only — never
+        // secrets, tokens, headers, or request bodies. Remove once the
+        // network-path investigation concludes.
+        (async () => {
+          const HOST = 'auth.opensky-network.org';
+          try {
+            const all = await lookupDns(HOST, { all: true });
+            console.warn(
+              '[OpenSky][net-diag] dns.lookup(all):',
+              JSON.stringify(all.map((r) => ({ address: r.address, family: r.family })))
+            );
+          } catch (diagErr) {
+            console.warn('[OpenSky][net-diag] dns.lookup(all) failed:', diagErr?.code || diagErr?.message || String(diagErr));
+          }
+          try {
+            const v4 = await resolve4Dns(HOST);
+            console.warn('[OpenSky][net-diag] dns.resolve4:', JSON.stringify(v4));
+          } catch (diagErr) {
+            console.warn('[OpenSky][net-diag] dns.resolve4 failed:', diagErr?.code || diagErr?.message || String(diagErr));
+          }
+          try {
+            const v6 = await resolve6Dns(HOST);
+            console.warn('[OpenSky][net-diag] dns.resolve6:', JSON.stringify(v6));
+          } catch (diagErr) {
+            console.warn('[OpenSky][net-diag] dns.resolve6: no AAAA record or lookup failed —', diagErr?.code || diagErr?.message || String(diagErr));
+          }
+          try {
+            console.warn(
+              '[OpenSky][net-diag] node network defaults:',
+              `dnsResultOrder=${dnsGetDefaultResultOrder()}`,
+              `autoSelectFamily=${getDefaultAutoSelectFamily()}`,
+              `autoSelectFamilyAttemptTimeout=${getDefaultAutoSelectFamilyAttemptTimeout()}`
+            );
+          } catch (diagErr) {
+            console.warn('[OpenSky][net-diag] node network defaults lookup failed:', diagErr?.message || String(diagErr));
+          }
+        })();
         _openskyAuthWarned = true;
       }
       _openskyToken = null;
