@@ -415,6 +415,127 @@ test('after a failure the backed-off retry owns the re-check; no gap timer is ad
   assert.deepEqual(h.timerDelays(), delaysAfterFailure);
 });
 
+// ── Fresh reopen: no fetch, but exactly one expiry check for the remaining freshness ──
+async function fetchedThenClosed(h) {
+  await h.check();
+  h.controller.setOpen(false);
+  assert.equal(h.timers.size, 0);
+}
+
+test('reopening with fresh data does not fetch and arms one expiry for the remaining freshness', async () => {
+  const h = harness();
+  await fetchedThenClosed(h);
+  h.now += 100_000;
+  h.controller.setOpen(true);
+  await settle();
+  assert.equal(h.fetches.length, 1, 'no immediate fetch on a fresh reopen');
+  assert.deepEqual(h.timerDelays(), [MAP_WEATHER_REFRESH_MS - 100_000]);
+
+  // Repeated checks and further reopens never stack expiry timers.
+  for (let i = 0; i < 4; i += 1) {
+    h.controller.check();
+    h.controller.onVisibilityChange();
+    h.controller.onCameraSettled();
+    await h.fireMs(MAP_WEATHER_SETTLE_MS);
+  }
+  assert.equal(h.timerDelays().filter((ms) => ms === MAP_WEATHER_REFRESH_MS - 100_000).length, 1);
+  assert.equal(h.timers.size, 1);
+  h.controller.setOpen(false);
+  h.now += 10_000;
+  h.controller.setOpen(true);
+  assert.deepEqual(h.timerDelays(), [MAP_WEATHER_REFRESH_MS - 110_000]);
+  assert.equal(h.fetches.length, 1);
+});
+
+test('the reopen expiry fires, recomputes, uses the latest centre, and fetches once', async () => {
+  const h = harness();
+  await fetchedThenClosed(h);
+  h.now += 100_000;
+  h.controller.setOpen(true);
+  const remaining = MAP_WEATHER_REFRESH_MS - 100_000;
+  h.center = { latitude: PARIS.latitude + 0.05, longitude: PARIS.longitude }; // moved, but < 25 km
+  h.now += remaining;
+  h.center = { latitude: PARIS.latitude + 0.07, longitude: PARIS.longitude }; // the latest centre at fire time
+  await h.fireMs(remaining);
+  assert.equal(h.fetches.length, 2, 'the freshness boundary makes the refresh due');
+  assert.equal(h.fetches[1], `/api/weather-effects?latitude=${(PARIS.latitude + 0.07).toFixed(5)}&longitude=2.35220`);
+  assert.deepEqual(h.timerDelays(), [MAP_WEATHER_REFRESH_MS], 'one fresh 5-minute expiry, no loop');
+});
+
+test('the reopen expiry is cancelled on close and suppressed when hidden or in cockpit', async () => {
+  const closed = harness();
+  await fetchedThenClosed(closed);
+  closed.now += 60_000;
+  closed.controller.setOpen(true);
+  assert.equal(closed.timers.size, 1);
+  closed.controller.setOpen(false);
+  assert.equal(closed.timers.size, 0);
+  assert.equal(closed.controller.expiryTimer, null);
+
+  for (const flag of ['hidden', 'suppressed']) {
+    // Reopening while suppressed arms nothing; resuming arms the remaining interval.
+    const h = harness();
+    await fetchedThenClosed(h);
+    h.now += 60_000;
+    h[flag] = true;
+    h.controller.setOpen(true);
+    assert.equal(h.timers.size, 0, `${flag}: nothing armed while suppressed`);
+    h[flag] = false;
+    h.controller.onVisibilityChange();
+    assert.deepEqual(h.timerDelays(), [MAP_WEATHER_REFRESH_MS - 60_000], `${flag}: resumes with the remaining interval`);
+
+    // A pending expiry that fires while suppressed neither fetches nor re-arms.
+    h[flag] = true;
+    h.now += MAP_WEATHER_REFRESH_MS;
+    await h.fireMs(MAP_WEATHER_REFRESH_MS - 60_000);
+    assert.equal(h.fetches.length, 1, `${flag}: no fetch while suppressed`);
+    assert.equal(h.timers.size, 0, `${flag}: not re-armed`);
+  }
+});
+
+test('reopen expiry coexists with the deferred gap retry without stacking either', async () => {
+  const h = harness();
+  await fetchedThenClosed(h);
+  h.now += 4_000; // still inside the 15 s gap from the fetch
+  h.controller.setOpen(true);
+  assert.deepEqual(h.timerDelays(), [MAP_WEATHER_REFRESH_MS - 4_000]);
+
+  h.center = FAR();
+  h.controller.onCameraSettled();
+  await h.fireMs(MAP_WEATHER_SETTLE_MS);
+  const remainingGap = MAP_WEATHER_MIN_FETCH_GAP_MS - 4_000;
+  assert.deepEqual(h.timerDelays().sort((a, b) => a - b), [remainingGap, MAP_WEATHER_REFRESH_MS - 4_000]);
+  assert.equal(h.fetches.length, 1);
+
+  h.now += remainingGap;
+  await h.fireMs(remainingGap);
+  assert.equal(h.fetches.length, 2);
+  assert.deepEqual(h.timerDelays(), [MAP_WEATHER_REFRESH_MS], 'the new fetch replaces the old expiry');
+  assert.equal(h.controller.gapTimer, null);
+});
+
+test('a due reopen still fetches immediately, and failure state gets no freshness timer', async () => {
+  const stale = harness();
+  await fetchedThenClosed(stale);
+  stale.now += MAP_WEATHER_REFRESH_MS + 1;
+  stale.controller.setOpen(true);
+  await settle();
+  assert.equal(stale.fetches.length, 2, 'stale data on reopen fetches as before');
+
+  const empty = harness({ open: false });
+  empty.controller.setOpen(true);
+  await settle();
+  assert.equal(empty.fetches.length, 1, 'no data on first open fetches as before');
+
+  const failing = harness();
+  await fetchedThenClosed(failing);
+  failing.controller.failures = 1; // backoff owns the re-check after a failure
+  failing.now += 60_000;
+  failing.controller.setOpen(true);
+  assert.equal(failing.timers.size, 0);
+  assert.equal(failing.fetches.length, 1);
+});
+
 test('failure keeps held data as STALE, fails quietly, and retries via one backed-off timer', async () => {
   let fail = false;
   const h = harness({

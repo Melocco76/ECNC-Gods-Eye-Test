@@ -214,6 +214,18 @@ export class MapWeatherCardController {
     }, delayMs);
   }
 
+  /**
+   * Fresh data with no fetch due (e.g. a reopen): make sure exactly one expiry
+   * check is pending for the remaining freshness interval. A pending timer
+   * (fetch-armed or failure backoff) is left alone, and failures never get a
+   * freshness timer because their own backoff timer already owns the re-check.
+   */
+  ensureExpiry(nowMs) {
+    if (this.expiryTimer !== null || !this.state.weather || this.failures > 0) return;
+    const remainingMs = this.state.fetchedAt + MAP_WEATHER_REFRESH_MS - nowMs;
+    if (Number.isFinite(remainingMs) && remainingMs > 0) this.armExpiry(remainingMs);
+  }
+
   clearGapRetry() {
     if (this.gapTimer !== null) this.clearTimer(this.gapTimer);
     this.gapTimer = null;
@@ -252,8 +264,11 @@ export class MapWeatherCardController {
       // A failure's own backed-off timer already re-checks with fresh
       // coordinates, so the gap retry only covers the healthy path.
       const gapLeftMs = this.lastAttemptAt + MAP_WEATHER_MIN_FETCH_GAP_MS - nowMs;
-      if (gapLeftMs > 0 && this.failures === 0 && mapWeatherRefreshDue({ ...args, lastAttemptAt: 0 })) {
-        this.armGapRetry(gapLeftMs);
+      const dueIgnoringGap = mapWeatherRefreshDue({ ...args, lastAttemptAt: 0 });
+      if (dueIgnoringGap) {
+        if (gapLeftMs > 0 && this.failures === 0) this.armGapRetry(gapLeftMs);
+      } else {
+        this.ensureExpiry(nowMs);
       }
       this.emit();
       return null;
