@@ -46,13 +46,13 @@ test('maps a full Open-Meteo observation onto card fields', () => {
     statusLabel: 'LIVE',
     place: '48.86°N 2.35°E',
     condition: 'OVERCAST',
-    temperature: '22°C',
-    feelsLike: '19°C',
+    temperature: '71°F',
+    feelsLike: '67°F',
     cloud: '100%',
-    precipitation: '0.0 mm',
-    wind: '12 km/h',
+    precipitation: '0.00 in',
+    wind: '8 mph',
     windDirection: 'W 272°',
-    visibility: '43 km',
+    visibility: '27 mi',
     observed: '16:00Z',
   });
 });
@@ -64,8 +64,45 @@ test('short visibility keeps one decimal and southern/western coordinates are la
     fetchedAt: 1,
     anchor: { latitude: -33.87, longitude: -70.5 },
   }, 2);
-  assert.equal(model.visibility, '0.8 km');
+  assert.equal(model.visibility, '0.5 mi');
   assert.equal(model.place, '33.87°S 70.50°W');
+});
+
+test('U.S. customary conversions: °C→°F, km/h→mph, m→miles, mm→inches', () => {
+  const at = (weather) => mapWeatherCardModel({
+    status: 'ready', weather, fetchedAt: 1, anchor: PARIS,
+  }, 2);
+  // °C → °F (temperature and feels-like), including freezing, boiling and negatives.
+  assert.equal(at({ temperatureC: 0, apparentTemperatureC: -10 }).temperature, '32°F');
+  assert.equal(at({ temperatureC: 0, apparentTemperatureC: -10 }).feelsLike, '14°F');
+  assert.equal(at({ temperatureC: 100 }).temperature, '212°F');
+  assert.equal(at({ temperatureC: 33, apparentTemperatureC: 36 }).temperature, '91°F');
+  assert.equal(at({ temperatureC: 33, apparentTemperatureC: 36 }).feelsLike, '97°F');
+  // km/h → mph
+  assert.equal(at({ windKph: 100 }).wind, '62 mph');
+  assert.equal(at({ windKph: 16.09 }).wind, '10 mph');
+  assert.equal(at({ windKph: 0 }).wind, '0 mph');
+  // metres → miles: one decimal under 10 mi, whole miles from 10 mi.
+  assert.equal(at({ visibilityM: 1609.344 }).visibility, '1.0 mi');
+  assert.equal(at({ visibilityM: 8046.72 }).visibility, '5.0 mi');
+  assert.equal(at({ visibilityM: 16093.44 }).visibility, '10 mi');
+  assert.equal(at({ visibilityM: 43180 }).visibility, '27 mi');
+  // mm → inches, two decimals
+  assert.equal(at({ precipitationMm: 25.4 }).precipitation, '1.00 in');
+  assert.equal(at({ precipitationMm: 2.54 }).precipitation, '0.10 in');
+  assert.equal(at({ precipitationMm: 0 }).precipitation, '0.00 in');
+  // Unit-free fields are unchanged.
+  const unchanged = at({ cloudCoverPct: 58, windDirectionDeg: 90 });
+  assert.equal(unchanged.cloud, '58%');
+  assert.equal(unchanged.windDirection, 'E 90°');
+});
+
+test('the conversion is display-only: the raw payload object is never mutated', () => {
+  const weather = { ...PARIS_WEATHER };
+  const snapshot = JSON.stringify(weather);
+  mapWeatherCardModel({ status: 'ready', weather, fetchedAt: 1, anchor: PARIS }, 2);
+  assert.equal(JSON.stringify(weather), snapshot);
+  assert.equal(weather.temperatureC, 21.8);
 });
 
 test('missing fields render as dashes and are never invented', () => {
@@ -75,7 +112,7 @@ test('missing fields render as dashes and are never invented', () => {
     fetchedAt: 1,
     anchor: PARIS,
   }, 2);
-  assert.equal(model.temperature, '10°C');
+  assert.equal(model.temperature, '50°F');
   for (const key of ['feelsLike', 'cloud', 'precipitation', 'wind', 'windDirection', 'visibility', 'observed', 'condition']) {
     assert.equal(model[key], '—', `${key} must be a dash when the source omits it`);
   }
@@ -209,7 +246,7 @@ test('opening fetches /api/weather-effects once for the view centre and renders 
   const last = h.renders.at(-1);
   assert.equal(last.view.open, true);
   assert.equal(last.model.status, 'ready');
-  assert.equal(last.model.temperature, '22°C');
+  assert.equal(last.model.temperature, '71°F');
 });
 
 test('a burst of camera-settled events collapses to one debounced check and no extra fetch', async () => {
@@ -254,7 +291,7 @@ test('failure keeps held data as STALE, fails quietly, and retries via one backe
   await h.check();
   const model = h.renders.at(-1).model;
   assert.equal(model.status, 'stale');
-  assert.equal(model.temperature, '22°C', 'held real data stays; nothing synthetic replaces it');
+  assert.equal(model.temperature, '71°F', 'held real data stays; nothing synthetic replaces it');
   assert.equal(h.timers.size, 1, 'exactly one retry timer, not a loop');
   const [retry] = [...h.timers.values()];
   assert.ok(retry.ms > 0 && retry.ms <= MAP_WEATHER_REFRESH_MS);

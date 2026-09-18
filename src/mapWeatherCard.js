@@ -13,6 +13,12 @@ export const MAP_WEATHER_MIN_FETCH_GAP_MS = 15_000;
 export const MAP_WEATHER_STALE_MS = 30 * 60_000;
 export const MAP_WEATHER_RETRY_BASE_MS = 30_000;
 
+// The backend payload stays metric; U.S. customary conversion is display-only.
+const MPH_PER_KPH = 0.621371;
+const MM_PER_INCH = 25.4;
+const METERS_PER_MILE = 1609.344;
+const celsiusToFahrenheit = (c) => (c * 9) / 5 + 32;
+
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const DASH = '—';
 
@@ -79,13 +85,16 @@ export function mapWeatherCardModel(state = {}, nowMs = Date.now()) {
     statusLabel: { ready: 'LIVE', loading: 'LOADING', stale: 'STALE', unavailable: 'UNAVAILABLE' }[status] || 'UNAVAILABLE',
     place: coordinateLabel(state.anchor),
     condition: weather && finite(weather.weatherCode) ? weatherCodeLabel(weather.weatherCode) : DASH,
-    temperature: num(weather?.temperatureC, (v) => `${Math.round(v)}°C`),
-    feelsLike: num(weather?.apparentTemperatureC, (v) => `${Math.round(v)}°C`),
+    temperature: num(weather?.temperatureC, (v) => `${Math.round(celsiusToFahrenheit(v))}°F`),
+    feelsLike: num(weather?.apparentTemperatureC, (v) => `${Math.round(celsiusToFahrenheit(v))}°F`),
     cloud: num(weather?.cloudCoverPct, (v) => `${Math.round(v)}%`),
-    precipitation: num(weather?.precipitationMm, (v) => `${v.toFixed(1)} mm`),
-    wind: num(weather?.windKph, (v) => `${Math.round(v)} km/h`),
+    precipitation: num(weather?.precipitationMm, (v) => `${(v / MM_PER_INCH).toFixed(2)} in`),
+    wind: num(weather?.windKph, (v) => `${Math.round(v * MPH_PER_KPH)} mph`),
     windDirection: windLabel(weather?.windDirectionDeg),
-    visibility: num(weather?.visibilityM, (v) => `${(v / 1000).toFixed(v >= 10_000 ? 0 : 1)} km`),
+    visibility: num(weather?.visibilityM, (v) => {
+      const miles = v / METERS_PER_MILE;
+      return `${miles.toFixed(miles >= 10 ? 0 : 1)} mi`;
+    }),
     observed: weather ? observedLabel(weather.observedAt) : DASH,
   };
 }
