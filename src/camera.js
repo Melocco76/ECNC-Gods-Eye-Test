@@ -2,7 +2,7 @@ import * as Cesium from 'cesium';
 
 /**
  * Camera presets for notable locations.
- * Phase 1 default: fly to Austin, TX on load.
+ * Startup view: see START_VIEW (Winston-Salem, NC).
  */
 export const CAMERA_PRESETS = {
   austin: {
@@ -47,28 +47,39 @@ export function flyToPreset(viewer, presetName, duration = 3.0) {
 }
 
 /**
- * Set camera to Austin on load with a cinematic fly-in.
+ * Default startup view: Winston-Salem, NC. The end altitude frames the metro
+ * area (~50 km across) looking straight down — not street level, not the region.
  */
-export function flyToAustin(viewer) {
-  // Start from a high altitude, then fly down
+export const START_VIEW = Object.freeze({
+  latitude: 36.0999,
+  longitude: -80.2442,
+  approachHeightM: 120000,
+  heightM: 45000,
+  heading: 0,
+  pitchDeg: -90,
+});
+
+/**
+ * Set the camera to the startup view on load with a cinematic fly-in.
+ */
+export function flyToStartView(viewer) {
+  const { latitude, longitude, approachHeightM, heightM, heading, pitchDeg } = START_VIEW;
+  const orientation = {
+    heading: Cesium.Math.toRadians(heading),
+    pitch: Cesium.Math.toRadians(pitchDeg),
+    roll: 0.0,
+  };
+  // Start from a higher altitude, then fly down
   viewer.camera.setView({
-    destination: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 25000),
-    orientation: {
-      heading: Cesium.Math.toRadians(0),
-      pitch: Cesium.Math.toRadians(-90),
-      roll: 0.0,
-    },
+    destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, approachHeightM),
+    orientation,
   });
 
   // Cinematic fly-in after a brief pause
   setTimeout(() => {
     viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 600),
-      orientation: {
-        heading: Cesium.Math.toRadians(15),
-        pitch: Cesium.Math.toRadians(-30),
-        roll: 0.0,
-      },
+      destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, heightM),
+      orientation,
       duration: 4.0,
       easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT,
     });

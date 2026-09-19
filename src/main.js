@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import { StyleManager } from './ui.js';
-import { flyToAustin } from './camera.js';
+import { flyToStartView } from './camera.js';
 import { DataLayerManager } from './data/manager.js';
 import flightsLayer from './data/flights.js';
 import militaryFlightsLayer from './data/militaryFlights.js';
@@ -197,10 +197,10 @@ async function init() {
     const cockpitCloudEffects = initCockpitCloudEffects(viewer);
     const mapWeatherCard = initMapWeatherCard(viewer);
 
-    // If no share link state, do default fly-to Austin
+    // If no share link state, do default fly-to Winston-Salem
     if (!styleManager.hasShareState) {
-      loaderStatus.textContent = 'Flying to Austin, TX...';
-      flyToAustin(viewer);
+      loaderStatus.textContent = 'Flying to Winston-Salem, NC...';
+      flyToStartView(viewer);
     } else {
       loaderStatus.textContent = 'Restoring shared view...';
     }

@@ -172,6 +172,7 @@ import {
   regionalDistanceM,
   weatherCodeLabel,
 } from './data/regionalBrief.js';
+import { formatPrecipInches, formatTemperatureF, formatWindMph } from './weatherUnits.js';
 import {
   altitudeRulerCurveInset,
   altitudeRulerTicks,
@@ -1824,11 +1825,11 @@ class CockpitViewController {
     const weather = payload?.weather;
     if (this.localTemperature) {
       this.localTemperature.textContent = Number.isFinite(weather?.temperatureC)
-        ? `${Math.round(weather.temperatureC)}°C` : '—';
+        ? formatTemperatureF(weather.temperatureC) : '—';
     }
     if (this.localWind) {
       this.localWind.textContent = Number.isFinite(weather?.windKph)
-        ? `${Math.round(weather.windKph)} KM/H` : '—';
+        ? formatWindMph(weather.windKph).toUpperCase() : '—';
     }
     if (this.localWindDirection) {
       this.localWindDirection.textContent = formatCockpitWindDirection(weather?.windDirectionDeg);
@@ -1840,7 +1841,7 @@ class CockpitViewController {
     }
     if (this.localPrecipitation) {
       this.localPrecipitation.textContent = Number.isFinite(weather?.precipitationMm)
-        ? weather.precipitationMm.toFixed(1) : '—';
+        ? formatPrecipInches(weather.precipitationMm) : '—';
     }
     if (this.signalStream) this.signalStream.dataset.regionalStatus = payload?.status || 'partial';
     if (this.briefPageIndex === 1 && this.briefSource) {
