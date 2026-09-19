@@ -2082,6 +2082,9 @@ export function firmsProxy(options = {}) {
   const TTL_MS = 30 * 60_000;
   const STATUS_TTL_MS = 5 * 60_000;
   const GZIP_CACHE_MAX = 2;
+  // Largest uncompressed body served to a client that refuses gzip; Cloud Run's
+  // HTTP/1 response ceiling is 32 MiB, so stay well under it.
+  const MAX_PLAIN_BYTES = options.maxPlainBytes ?? 24 * 1024 * 1024;
   const SOURCES = options.sources || FIRMS_SOURCES;
   const LIMITS = { ...FIRMS_SOURCE_LIMITS, ...(options.limits || {}) };
   const fetchImpl = options.fetchImpl || ((...args) => fetch(...args));
@@ -2312,6 +2315,19 @@ export function firmsProxy(options = {}) {
     const payload = useGzip
       ? await gzipFor(entry, window, stale, rawChunks)
       : bundle(rawChunks);
+    if (!useGzip && payload.length > MAX_PLAIN_BYTES) {
+      // Cloud Run rejects HTTP/1 responses over 32 MiB mid-write (500 + premature
+      // close), so refuse cleanly instead of attempting the oversized body.
+      const body = JSON.stringify({ error: 'gzip_required', message: 'FIRMS response requires gzip encoding' });
+      res.writeHead(406, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+        Vary: 'Accept-Encoding',
+        'Content-Length': String(Buffer.byteLength(body)),
+      });
+      res.end(body);
+      return;
+    }
     const headers = {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-store',

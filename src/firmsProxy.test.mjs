@@ -87,6 +87,7 @@ function makeProxy(options = {}) {
     rateLimiter: options.rateLimiter ?? (() => true),
     sources: options.sources,
     limits: options.limits,
+    maxPlainBytes: options.maxPlainBytes,
   }).configureServer({ middlewares: { use(p, h) { routes.set(p, h); } } });
   const handler = routes.get('/api/firms');
   const call = async (url = '/', headers = {}) => {
@@ -169,6 +170,38 @@ test('gzip when accepted (single compression), plain JSON otherwise, identical d
   assert.equal(decodedGzip.toString().startsWith('{"fetchedAt"'), true, 'not double-compressed');
   console.log(`[firms test] fixture ratio: ${plain.body.length} B JSON -> ${gz.body.length} B gzip (${(plain.body.length / gz.body.length).toFixed(1)}x, 6,000 synthetic rows)`);
   assert.ok(gz.body.length < plain.body.length / 3, 'gzip meaningfully smaller on the fixture');
+});
+
+test('oversized plain body: gzip-refusing clients get a small controlled 406, gzip clients are unchanged', async () => {
+  const proxy = makeProxy({ upstream: makeUpstream({ '*': { csv: csvFor(2000) } }), maxPlainBytes: 100_000 });
+  const gz = await proxy.call('/', { 'accept-encoding': 'gzip' });
+  assert.equal(gz.status, 200);
+  assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.ok(decode(gz).count > 1000);
+
+  for (const headers of [{}, { 'accept-encoding': 'identity' }, { 'accept-encoding': 'gzip;q=0' }, { 'accept-encoding': 'gzip;q=0, identity' }]) {
+    const response = await proxy.call('/', headers);
+    assert.equal(response.status, 406, JSON.stringify(headers));
+    assert.equal(response.headers['content-type'], 'application/json');
+    assert.equal(response.headers.vary, 'Accept-Encoding');
+    assert.equal(response.headers['content-encoding'], undefined);
+    assert.equal(response.headers['content-length'], String(response.body.length));
+    assert.deepEqual(JSON.parse(response.body), { error: 'gzip_required', message: 'FIRMS response requires gzip encoding' });
+    assert.ok(response.body.length < 200, 'controlled body is tiny; the oversized payload is never written');
+    const text = response.body.toString();
+    for (const leak of [KEY, 'firms.modaps', 'MAP_KEY', '.gev-cache', 'fires']) assert.equal(text.includes(leak), false, leak);
+  }
+});
+
+test('small plain body is still served plain to clients that do not accept gzip', async () => {
+  const proxy = makeProxy({ maxPlainBytes: 1_000_000 });
+  for (const headers of [{}, { 'accept-encoding': 'identity' }, { 'accept-encoding': 'gzip;q=0' }]) {
+    const response = await proxy.call('/', headers);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers['content-encoding'], undefined);
+    assert.equal(response.headers.vary, 'Accept-Encoding');
+    assert.equal(decode(response).count, 15);
+  }
 });
 
 test('the serialized payload is cached: no upstream calls and no JSON.stringify per request', async () => {

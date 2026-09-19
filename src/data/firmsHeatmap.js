@@ -697,12 +697,15 @@ export function createFirmsHeatmapLayer({
     rebuildAmbientLabels();
     refreshContextRegistrations(candidates.slice(0, CONTEXT_TOP_N));
 
-    if (lod.id === 'close') {
+    if (lod.id === 'close' && bounds) {
       // Batched (chunked ≤200, sequential, session-cached) DEM warm for the
       // rendered subset; fires are static so each coarse cell resolves once
       // ever. Re-render ONLY when a floor actually landed — a failed resolve
       // reports false, so this chain terminates instead of looping against a
-      // down proxy (the next camera-driven rebuild retries).
+      // down proxy (the next camera-driven rebuild retries). Skipped without
+      // view bounds (sky/horizon): the candidates are then the globally
+      // strongest fires, scattered across continents, and warming them would
+      // queue ~15 sequential DEM requests for detections that are not in view.
       warmFireAnchorFloors(candidates).then((warmed) => {
         if (!warmed || !_enabled || !_viewer) return;
         const currentLod = LOD_LEVELS[_currentLodIndex];
