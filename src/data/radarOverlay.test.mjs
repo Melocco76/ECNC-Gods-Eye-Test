@@ -88,6 +88,23 @@ function makeHarness({
     dispatchStack('ready');
   };
 
+  // The REAL MapStackController timing: it emits 'switching', commits the new stack,
+  // emits 'ready' while its own getState() STILL reports "switching" (the flag is
+  // cleared in a `finally` that runs after the emit), and only then settles.
+  const realSwitch = (id) => {
+    controllerState.switching = true;
+    dispatchStack('switching');
+    controllerState.gen += 1;
+    controllerState.activeId = id;
+    const statusDuringReady = [];
+    const spy = () => statusDuringReady.push(controller.getState().status);
+    eventTarget.addEventListener('gev:map-stack-changed', spy);
+    dispatchStack('ready');
+    eventTarget.removeEventListener('gev:map-stack-changed', spy);
+    controllerState.switching = false;
+    return statusDuringReady;
+  };
+
   const doc = {
     hidden: false,
     listeners: new Set(),
@@ -145,7 +162,7 @@ function makeHarness({
   });
 
   return {
-    layer, viewer, viewerLayers, tilesetLayers, controller, controllerState, userSwitch, dispatchStack,
+    layer, viewer, viewerLayers, tilesetLayers, controller, controllerState, userSwitch, realSwitch, dispatchStack,
     doc, eventTarget, timers, activeTimers, fire, credits, renders, created, fetchState, clock,
   };
 }
@@ -269,6 +286,105 @@ test('map-stack migration moves the layer between collections, keeping frame and
   h.controllerState.switching = true;
   h.dispatchStack('switching');
   assert.equal(h.viewerLayers.layers.length, 1);
+});
+
+test('real controller timing: Google 3D → Esri/OSM migrates even though getState() still says switching', async () => {
+  for (const globeId of ['esri-imagery', 'osm']) {
+    const h = makeHarness({ activeId: 'photoreal' });
+    await enable(h);
+    h.layer.setParams({ opacity: 0.4 });
+    const frame = h.layer.getStats().framePath;
+    assert.equal(h.tilesetLayers.layers.length, 1, 'starts attached to the tileset');
+    const registeredBefore = h.credits.registered;
+    const tilesetLayer = h.tilesetLayers.layers[0];
+
+    const statusDuringReady = h.realSwitch(globeId);
+    assert.deepEqual(statusDuringReady, ['switching'],
+      'the ready event fires while the controller still reports "switching" (the real timing)');
+
+    assert.equal(h.tilesetLayers.layers.length, 0, `${globeId}: detached from the hidden tileset`);
+    assert.ok(h.tilesetLayers.destroyed.includes(tilesetLayer), 'the tileset layer was destroyed');
+    assert.equal(h.viewerLayers.layers.length, 1, `${globeId}: attached to the globe exactly once`);
+    assert.equal(h.viewerLayers.layers[0].alpha, 0.4, 'opacity preserved');
+    assert.equal(h.viewerLayers.layers[0].framePath, frame, 'same frame');
+    assert.equal(h.layer.getStats().attachedTo, 'viewer');
+    assert.equal(h.credits.live, true, 'credit still shown');
+    assert.equal(h.credits.registered - registeredBefore, 1, 'credit re-registered once for the new surface');
+    assert.deepEqual(h.controllerState.setStackCalls, [], 'no fallback switch triggered');
+
+    // A repeated settled event (some paths emit more than one) must not duplicate the layer.
+    h.dispatchStack('ready');
+    assert.equal(h.viewerLayers.layers.length, 1, 'no duplicate radar layer');
+    assert.equal(h.tilesetLayers.layers.length, 0);
+    h.layer.disable();
+  }
+});
+
+test('real controller timing: Esri/OSM → Google 3D migrates back to the tileset exactly once', async () => {
+  for (const globeId of ['esri-imagery', 'osm']) {
+    const h = makeHarness({ activeId: globeId });
+    await enable(h);
+    h.layer.setParams({ opacity: 0.4 });
+    const frame = h.layer.getStats().framePath;
+    assert.equal(h.viewerLayers.layers.length, 1, 'starts attached to the globe');
+    const viewerLayer = h.viewerLayers.layers[0];
+    const registeredBefore = h.credits.registered;
+
+    const statusDuringReady = h.realSwitch('photoreal');
+    assert.deepEqual(statusDuringReady, ['switching']);
+
+    assert.equal(h.viewerLayers.layers.length, 0, `${globeId} → Google 3D: viewer layer removed`);
+    assert.ok(h.viewerLayers.destroyed.includes(viewerLayer));
+    assert.equal(h.tilesetLayers.layers.length, 1, 'tileset layer added exactly once');
+    assert.equal(h.tilesetLayers.layers[0].alpha, 0.4, 'opacity preserved');
+    assert.equal(h.tilesetLayers.layers[0].framePath, frame, 'same frame');
+    assert.equal(h.layer.getStats().attachedTo, 'tileset');
+    assert.equal(h.credits.live, true);
+    assert.equal(h.credits.registered - registeredBefore, 1);
+    assert.deepEqual(h.controllerState.setStackCalls, [], 'no fallback triggered');
+
+    h.dispatchStack('ready');
+    assert.equal(h.tilesetLayers.layers.length, 1, 'no duplicate radar layer');
+    assert.equal(h.viewerLayers.layers.length, 0);
+    h.layer.disable();
+  }
+});
+
+test('real controller timing: a full Google 3D → Esri → Google 3D round trip ends with one layer on the tileset', async () => {
+  const h = makeHarness({ activeId: 'photoreal' });
+  await enable(h);
+  h.realSwitch('esri-imagery');
+  assert.equal(h.viewerLayers.layers.length, 1, 'on the globe after the first switch');
+  assert.equal(h.tilesetLayers.layers.length, 0);
+  h.realSwitch('osm');
+  assert.equal(h.viewerLayers.layers.length, 1, 'globe → globe keeps a single layer');
+  h.realSwitch('photoreal');
+  assert.equal(h.tilesetLayers.layers.length, 1);
+  assert.equal(h.viewerLayers.layers.length, 0);
+  assert.equal(h.credits.live, true);
+  assert.deepEqual(h.controllerState.setStackCalls, []);
+});
+
+test('the mid-switch guard still protects paths with no settled event (fetch landing during a real switch)', async () => {
+  const h = makeHarness({ activeId: 'photoreal' });
+  let resolve;
+  h.fetchState.deferred = { promise: new Promise((r) => { resolve = r; }) };
+  h.layer.init(h.viewer);
+  const pending = h.layer.enable(h.viewer);
+  h.controllerState.switching = true;
+  h.dispatchStack('switching');
+  resolve(makeFrame('during-real-switch'));
+  await pending;
+  assert.equal(h.tilesetLayers.layers.length, 0, 'not attached to a stack that is going away');
+  assert.equal(h.viewerLayers.layers.length, 0);
+
+  // The switch completes with the real timing: the ready event attaches to the winner.
+  h.controllerState.gen += 1;
+  h.controllerState.activeId = 'esri-imagery';
+  h.dispatchStack('ready'); // controller state still "switching" here
+  h.controllerState.switching = false;
+  assert.equal(h.viewerLayers.layers.length, 1);
+  assert.equal(h.tilesetLayers.layers.length, 0);
 });
 
 test('fallback: no tileset.imageryLayers → switch to Esri, say why, restore on disable', async () => {

@@ -197,10 +197,18 @@ export function createRadarOverlayLayer(deps = {}) {
     }
   }
 
-  /** Make the attachment match the active map stack. Idempotent and synchronous. */
-  function reconcile() {
+  /**
+   * Make the attachment match the active map stack. Idempotent and synchronous.
+   * @param {{settled?: boolean}} [options] `settled` means a stack-change EVENT just
+   *   reported the transition as finished. The controller emits that event before
+   *   its own getState() drops back from "switching", so the event is authoritative
+   *   and the controller-state guard must not veto it.
+   */
+  function reconcile({ settled = false } = {}) {
     if (!_enabled || !_frame) return;
-    if (isSwitching()) return; // the 'ready' stack event re-runs this
+    // No settled-event context (e.g. an index fetch landing mid-switch): wait for the
+    // 'ready' stack event, which re-runs this with settled: true.
+    if (!settled && isSwitching()) return;
     const owner = activeSurface();
 
     // The user took the stack away from a fallback we caused: never restore over them.
@@ -422,7 +430,7 @@ export function createRadarOverlayLayer(deps = {}) {
       const onStack = (event) => {
         try {
           if (!_enabled || event?.detail?.status === 'switching') return;
-          reconcile();
+          reconcile({ settled: true });
         } catch (error) {
           console.warn('[Radar] stack-change handling failed:', error);
         }
