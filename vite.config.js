@@ -4635,17 +4635,48 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
 }
 
 /**
+ * Known upstream "camera offline" placeholder images. Some providers answer a
+ * dead camera with HTTP 200 and a stock picture, which would otherwise be shown
+ * (and reported healthy) as a live frame. Identity is the content hash; the byte
+ * length is only a cheap pre-filter so ordinary frames are never hashed.
+ * Austin: the City's "Image Unavailable" JPEG, identical across every offline camera.
+ */
+const CCTV_PLACEHOLDER_IMAGES = Object.freeze([
+  Object.freeze({
+    label: 'austin-image-unavailable',
+    bytes: 12805,
+    sha256: 'db8d3ffca668cac202fd73df14bcc10e703b22f166903e8ff9937998d963e08e',
+  }),
+]);
+
+/**
+ * Whether an upstream image body is one of the known offline placeholders.
+ * @param {Buffer|Uint8Array|null|undefined} body - Downloaded image bytes.
+ * @returns {boolean}
+ */
+export function isKnownCctvPlaceholder(body) {
+  if (!body || !body.length) return false;
+  for (const placeholder of CCTV_PLACEHOLDER_IMAGES) {
+    if (body.length !== placeholder.bytes) continue;
+    if (createHash('sha256').update(body).digest('hex') === placeholder.sha256) return true;
+  }
+  return false;
+}
+
+/**
  * Fetch one upstream CCTV image within the frame-refresh budget.
  *
  * A timeout is treated like every other upstream miss so the caller can
- * continue through the Street View and synthetic fallback chain. `fetchImpl`
- * and `timeoutMs` are injectable only to keep the timeout contract unit-testable.
+ * continue through the Street View and synthetic fallback chain. A known
+ * offline-placeholder image is also a miss, reported as `{ ok: false, placeholder: true }`
+ * so the caller can fall back and record why. `fetchImpl` and `timeoutMs` are
+ * injectable only to keep the timeout contract unit-testable.
  *
  * @param {string} url - Server-registered upstream image URL.
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl=fetch] - Fetch implementation.
  * @param {number} [options.timeoutMs=CCTV_FRAME_FETCH_TIMEOUT_MS] - Abort timeout.
- * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
+ * @returns {Promise<{ok:true,body:Buffer,contentType:string}|{ok:false,placeholder:true}|null>}
  */
 export async function fetchCctvImageFromUpstream(url, {
   fetchImpl = fetch,
@@ -4663,9 +4694,11 @@ export async function fetchCctvImageFromUpstream(url, {
     });
     const contentType = upstream.headers.get('content-type') || '';
     if (!upstream.ok || !contentType.startsWith('image/')) return null;
+    const body = Buffer.from(await upstream.arrayBuffer());
+    if (isKnownCctvPlaceholder(body)) return { ok: false, placeholder: true };
     return {
       ok: true,
-      body: Buffer.from(await upstream.arrayBuffer()),
+      body,
       contentType,
     };
   } catch {
@@ -4688,7 +4721,7 @@ export async function fetchCctvImageFromUpstream(url, {
  *
  * @returns {import('vite').Plugin}
  */
-function cctvProxy() {
+export function cctvProxy({ fetchImpl = null } = {}) {
   /** @type {Map<string,{id:string,status:string,sourceKind:string,label:string,message:string,updatedAt:number}>} */
   const health = new Map();
   /** Cap on health map entries to prevent unbounded growth. Sized to cover the
@@ -4747,7 +4780,7 @@ function cctvProxy() {
       sv.searchParams.set('return_error_code', 'true');
       sv.searchParams.set('key', streetViewKey);
 
-      const svResp = await fetch(sv.toString(), {
+      const svResp = await (fetchImpl || fetch)(sv.toString(), {
         headers: { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' },
         signal: AbortSignal.timeout(CCTV_FRAME_FETCH_TIMEOUT_MS),
       });
@@ -4907,7 +4940,8 @@ function cctvProxy() {
             source?.snapshotUrl
             || (!isVideoFeedType(normalizeFeedType(source?.feedType)) ? source?.url : '');
 
-          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate);
+          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate, fetchImpl ? { fetchImpl } : undefined);
+          const upstreamPlaceholder = upstreamImage?.placeholder === true;
           if (upstreamImage?.ok) {
             setHealth(cameraId, {
               status: 'ok',
@@ -4930,7 +4964,9 @@ function cctvProxy() {
               status: 'degraded',
               sourceKind: 'streetview',
               label: 'Google Street View',
-              message: 'Fallback Street View frame',
+              message: upstreamPlaceholder
+                ? 'Upstream camera offline (placeholder image); Street View fallback frame'
+                : 'Fallback Street View frame',
             });
             res.writeHead(200, {
               'Content-Type': sv.contentType,
@@ -4945,14 +4981,18 @@ function cctvProxy() {
             cameraId,
             label,
             city,
-            status: source?.url ? 'UPSTREAM UNAVAILABLE' : 'NO UPSTREAM CONFIGURED',
+            status: upstreamPlaceholder
+              ? 'UPSTREAM CAMERA OFFLINE'
+              : (source?.url ? 'UPSTREAM UNAVAILABLE' : 'NO UPSTREAM CONFIGURED'),
           });
 
           setHealth(cameraId, {
             status: 'degraded',
             sourceKind: 'synthetic',
             label: source?.provider || 'Synthetic fallback',
-            message: source?.url ? 'Upstream unavailable' : 'No source configured',
+            message: upstreamPlaceholder
+              ? 'Upstream camera offline (placeholder image)'
+              : (source?.url ? 'Upstream unavailable' : 'No source configured'),
           });
 
           res.writeHead(200, {
