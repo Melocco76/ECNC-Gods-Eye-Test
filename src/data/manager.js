@@ -2088,6 +2088,16 @@ export class DataLayerManager {
             ?.find((entry) => entry.id === button.dataset.chipId);
           if (chip?.params) this.setLayerParams(layer.id, chip.params, { origin: 'user' });
         });
+        // A range input reports its value on every drag step; apply it through
+        // the same param lane as a chip, scaled into the layer's own units.
+        controls.addEventListener('input', (event) => {
+          const input = event.target;
+          if (!input?.dataset?.paramKey) return;
+          const raw = Number(input.value);
+          if (!Number.isFinite(raw)) return;
+          const scale = Number(input.dataset.scale) || 1;
+          this.setLayerParams(layer.id, { [input.dataset.paramKey]: raw * scale }, { origin: 'user' });
+        });
         row.appendChild(controls);
         this._syncRowControls(controls, layer);
       }
@@ -2132,7 +2142,9 @@ export class DataLayerManager {
     const controls = layer.enabled ? this._rowControlsFor(layer.id) : null;
     const chips = controls?.chips || [];
     const legend = controls?.legend || [];
-    container.hidden = chips.length === 0 && legend.length === 0;
+    container.hidden = chips.length === 0 && legend.length === 0
+      && !controls?.slider && !controls?.note;
+    this._syncRowSlider(container, controls);
 
     for (const node of [...container.children]) {
       if (String(node.className).split(/\s+/).includes('data-toggle-legend-item')) node.remove();
@@ -2173,6 +2185,78 @@ export class DataLayerManager {
       text.textContent = `${item.label} ${this._formatCount(item.count)}`;
       entry.append(swatch, text);
       container.appendChild(entry);
+    }
+  }
+
+  /**
+   * Optional slider row (label, range input, value) plus a credit link and a
+   * reserved slot for a future control, reconciled IN PLACE like the chips so a
+   * drag in progress keeps focus across panel refreshes. The write path is the
+   * delegated `input` listener on the row's controls node (see buildTogglePanel).
+   * @param {HTMLElement} container The row's `.data-toggle-controls` node.
+   * @param {{slider?: object, note?: object, reserveSlot?: boolean}|null} controls
+   */
+  _syncRowSlider(container, controls) {
+    const find = (kind) => [...container.children].find((node) => node.dataset?.controlKind === kind) || null;
+
+    const slider = controls?.slider || null;
+    let row = find('slider');
+    if (!slider) {
+      row?.remove();
+    } else {
+      if (!row) {
+        row = document.createElement('label');
+        row.className = 'data-toggle-slider';
+        row.dataset.controlKind = 'slider';
+        const label = document.createElement('span');
+        label.className = 'data-toggle-slider-label';
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.className = 'data-toggle-slider-input';
+        const value = document.createElement('span');
+        value.className = 'data-toggle-slider-value';
+        row.append(label, input, value);
+        container.appendChild(row);
+      }
+      const [label, input, value] = row.children;
+      input.dataset.sliderId = String(slider.id);
+      input.dataset.paramKey = String(slider.paramKey || slider.id);
+      input.dataset.scale = String(slider.scale ?? 1);
+      if (label.textContent !== slider.label) label.textContent = slider.label;
+      for (const [attr, v] of [['min', slider.min], ['max', slider.max], ['step', slider.step]]) {
+        if (v !== undefined) input.setAttribute(attr, v);
+      }
+      input.setAttribute('aria-label', slider.ariaLabel || slider.label);
+      if (String(input.value) !== String(slider.value)) input.value = String(slider.value);
+      if (value.textContent !== slider.valueText) value.textContent = slider.valueText ?? '';
+    }
+
+    let reserved = find('reserved');
+    if (controls?.reserveSlot && !reserved) {
+      reserved = document.createElement('span');
+      reserved.className = 'data-toggle-slot-reserved';
+      reserved.dataset.controlKind = 'reserved';
+      reserved.setAttribute('aria-hidden', 'true');
+      container.appendChild(reserved);
+    } else if (!controls?.reserveSlot) {
+      reserved?.remove();
+    }
+
+    const note = controls?.note || null;
+    let noteNode = find('note');
+    if (!note) {
+      noteNode?.remove();
+    } else {
+      if (!noteNode) {
+        noteNode = document.createElement('a');
+        noteNode.className = 'data-toggle-note';
+        noteNode.dataset.controlKind = 'note';
+        noteNode.setAttribute('target', '_blank');
+        noteNode.setAttribute('rel', 'noopener noreferrer');
+        container.appendChild(noteNode);
+      }
+      if (noteNode.textContent !== note.text) noteNode.textContent = note.text;
+      if (note.href) noteNode.setAttribute('href', note.href);
     }
   }
 
@@ -2218,6 +2302,17 @@ export class DataLayerManager {
     }
     if (layer.lifecycleUncertain) {
       return `UNCERTAIN · ${source} · lifecycle state requires reconciliation`;
+    }
+    // A layer that owns its own one-line status ("RADAR · 14:20Z · 8 min ago")
+    // supplies it verbatim; the generic composition below would mis-describe it.
+    const statusModule = layer.enabled ? this.layers.get(layer.id)?.module : null;
+    if (typeof statusModule?.getStatusText === 'function') {
+      try {
+        const text = statusModule.getStatusText();
+        if (typeof text === 'string' && text.trim()) return text.trim();
+      } catch (error) {
+        console.warn(`[Data] ${layer.id} getStatusText error:`, error);
+      }
     }
     const presentedError = stats.error || stats.lastError || stats.managerRefreshError;
     if (presentedError) {

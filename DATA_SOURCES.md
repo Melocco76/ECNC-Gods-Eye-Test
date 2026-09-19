@@ -36,6 +36,7 @@ How to read this:
 | **TfL Open Data (JamCams)** | CCTV camera catalog + frames, London | [TfL Open Data terms](https://tfl.gov.uk/info-for/open-data-users/) — attribution REQUIRED | "Powered by TfL Open Data. Contains OS data © Crown copyright and database rights" |
 | **GBFS (Lyft / BCycle)** | Bikeshare availability | Per-feed (attribution-only) | Credit the operator (e.g. Austin BCycle) + its `license_url` |
 | **Radio Browser** | Geolocated internet-radio station directory and station-level tags | Public-domain directory data under PDDL 1.0; individual broadcaster stream terms apply | "Radio Browser" plus a link to the selected broadcaster |
+| **RainViewer** (weather radar tiles) | Latest weather-radar overlay (Weather Radar layer; off by default; keyless, fetched directly by the browser) | [RainViewer API terms](https://www.rainviewer.com/api.html): free public API for personal and educational use, no availability guarantee, may change | "Weather radar © RainViewer" (linked) — registered while the radar layer is on, shown as its own line separate from the Google/Cesium attribution |
 | **Re:Earth Terrain** (Mapterhorn) | Terrain (keyless globe stacks — OSM etc. — + `/api/terrain/heights` ellipsoidal-height lookups) | Terrain mesh: CC BY 4.0; geoid: EGM2008 (NGA, public domain) | "Terrain (keyless globe stacks): Re:Earth Terrain / Mapterhorn (CC BY 4.0) / EGM2008 (NGA)" |
 
 ### Notes on the live sources

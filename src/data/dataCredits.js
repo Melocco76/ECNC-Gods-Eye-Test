@@ -201,8 +201,24 @@ export const NATURAL_EARTH_CREDIT = {
     '<a href="https://www.naturalearthdata.com" target="_blank" rel="noopener">Natural Earth</a> (public domain)',
 };
 
+/**
+ * Weather-radar tiles (RainViewer). Registered while the radar layer is
+ * attached and removed when it detaches — RainViewer asks for a visible mention
+ * with a link. Kept as its own credit line so it is never read as part of the
+ * Google/Cesium basemap attribution.
+ * @type {{ key: string, html: string }}
+ */
+export const RAINVIEWER_CREDIT = {
+  key: 'rainviewer',
+  html:
+    'Weather radar © ' +
+    '<a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>',
+};
+
 /** @type {Set<string>} Keys of dynamic credits already registered this session. */
 const _dynamicCreditKeys = new Set();
+/** @type {Map<string, Cesium.Credit>} Live Credit objects, so a credit can be removed again. */
+const _dynamicCredits = new Map();
 
 /**
  * Register a conditional credit at the moment its data source activates.
@@ -219,8 +235,30 @@ export function registerDynamicCredit(viewer, credit) {
   }
   if (!credit?.key || !credit?.html) return false;
   if (_dynamicCreditKeys.has(credit.key)) return true;
-  creditDisplay.addStaticCredit(new Cesium.Credit(credit.html, false));
+  const entry = new Cesium.Credit(credit.html, false);
+  creditDisplay.addStaticCredit(entry);
   _dynamicCreditKeys.add(credit.key);
+  _dynamicCredits.set(credit.key, entry);
+  return true;
+}
+
+/**
+ * Remove a conditional credit registered by `registerDynamicCredit`, so a layer
+ * that turns off stops claiming a source it is no longer showing. Safe when the
+ * credit was never registered.
+ * @param {Cesium.Viewer} viewer — the initialized Cesium viewer
+ * @param {{ key: string }} credit — e.g. `RAINVIEWER_CREDIT`
+ * @returns {boolean} True when a registered credit was removed.
+ */
+export function unregisterDynamicCredit(viewer, credit) {
+  const creditDisplay = viewer?.creditDisplay;
+  const entry = credit?.key ? _dynamicCredits.get(credit.key) : null;
+  if (!entry) return false;
+  _dynamicCredits.delete(credit.key);
+  _dynamicCreditKeys.delete(credit.key);
+  if (typeof creditDisplay?.removeStaticCredit === 'function') {
+    creditDisplay.removeStaticCredit(entry);
+  }
   return true;
 }
 

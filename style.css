@@ -6064,6 +6064,59 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   flex: none;
 }
 
+/* Slider sub-control (weather radar opacity): label, range, value on one
+   compact line that shrinks with the rail instead of widening it. */
+.data-toggle-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 130px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 1.2px;
+  color: var(--text-dim);
+}
+
+.data-toggle-slider-input {
+  flex: 1 1 60px;
+  min-width: 0;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.data-toggle-slider-value {
+  flex: none;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+/* Empty room for the future radar play/pause button so adding it later does
+   not reflow the row. Purely spacing — no control lives here yet. */
+.data-toggle-slot-reserved {
+  flex: none;
+  width: 22px;
+  height: 14px;
+}
+
+.data-toggle-note {
+  flex: 0 0 100%;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.data-toggle-note:hover,
+.data-toggle-note:focus-visible {
+  color: var(--text-secondary);
+}
+
 /* ── CCTV Panel ─────────────────────────────── */
 #cctv-panel {
   --panel-expanded-width: 360px;
