@@ -5,6 +5,12 @@
 // sockets. The adapter owns sockets and translates watchdog ACTIONS into
 // transport calls; the watchdog owns policy and owns no I/O.
 //
+// The app deliberately keeps AT MOST ONE live socket per process. AISStream
+// itself now allows more (3 subscribed connections per account, 3 open per
+// originating IP), but a single socket keeps us far inside those limits
+// during rollouts (old + new revision = 2), and it keeps one ordered message
+// stream feeding one cache. Do not relax it without revisiting that headroom.
+//
 // Two ownership rules make the single-socket invariant hold even when events
 // arrive late, out of order, or across a dev-server restart:
 //
@@ -250,6 +256,33 @@ export function parseAisEnvelope(text) {
 }
 
 /**
+ * Recognise AISStream's SubscriptionConfirmation and read its compression flag.
+ *
+ * The docs say to check SubscriptionConfirmation.Message.CompressionEnabled, so
+ * that is read first; the other envelope shapes are tolerated defensively. A
+ * confirmation is protocol activity, never a vessel record.
+ *
+ * @param {Object} envelope Parsed JSON frame.
+ * @returns {{compressionEnabled: boolean|null}|null} null when not a confirmation.
+ */
+export function parseSubscriptionConfirmation(envelope) {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return null;
+  const nested = envelope.SubscriptionConfirmation;
+  const isConfirmation = envelope.MessageType === 'SubscriptionConfirmation'
+    || (nested !== null && typeof nested === 'object');
+  if (!isConfirmation) return null;
+  const candidates = [
+    envelope.Message?.CompressionEnabled,
+    envelope.Message?.SubscriptionConfirmation?.CompressionEnabled,
+    nested?.Message?.CompressionEnabled,
+    nested?.CompressionEnabled,
+    envelope.CompressionEnabled,
+  ];
+  const flag = candidates.find((value) => typeof value === 'boolean');
+  return { compressionEnabled: flag === undefined ? null : flag };
+}
+
+/**
  * Create the AISStream transport adapter.
  *
  * @param {Object} options
@@ -260,6 +293,10 @@ export function parseAisEnvelope(text) {
  *   only when the envelope was a real AIS record — the sole liveness proof.
  * @param {{wall: function, mono: function}} [options.clock]
  * @param {(message: string) => void} [options.warn]
+ * @param {(confirmation: {compressionEnabled: boolean|null}) => void} [options.onSubscriptionConfirmed]
+ *   Called once per confirmed subscription. Receives no key or payload.
+ * @param {(text: string) => string} [options.redact] Scrubs secrets from any
+ *   upstream-supplied text before it reaches the watchdog (and so /api/ais-live).
  * @returns {Object} adapter handle
  */
 export function createAisStreamAdapter(options) {
@@ -270,7 +307,19 @@ export function createAisStreamAdapter(options) {
     ingestEnvelope,
     clock = DEFAULT_CLOCK,
     warn = () => {},
+    onSubscriptionConfirmed = () => {},
+    redact = (text) => text,
   } = options;
+
+  /** The most recent confirmed subscription (diagnostics only; never sent to the browser). */
+  let lastConfirmation = null;
+  const scrub = (text) => {
+    try {
+      return redact(String(text ?? ''));
+    } catch {
+      return '';
+    }
+  };
 
   /** generation -> socket. Mutated only through the identity-checked helpers. */
   const sockets = new Map();
@@ -332,7 +381,10 @@ export function createAisStreamAdapter(options) {
 
   /** Fail a generation through its owning watchdog, with classification. */
   function failGeneration(owner, generation, detail) {
-    runActions(owner, owner.onFailure(generation, detail));
+    const safeDetail = detail && typeof detail.message === 'string'
+      ? { ...detail, message: scrub(detail.message) }
+      : detail;
+    runActions(owner, owner.onFailure(generation, safeDetail));
   }
 
   /**
@@ -489,6 +541,22 @@ export function createAisStreamAdapter(options) {
       return;
     }
 
+    const confirmation = parseSubscriptionConfirmation(parsed.envelope);
+    if (confirmation) {
+      // Protocol activity: the server accepted our credential and subscription.
+      // Not a vessel record, so it never reaches the cache.
+      runActions(owner, owner.onConfirmation(generation));
+      if (ownsSocket(generation, socket)) {
+        lastConfirmation = { at: clock.wall(), compressionEnabled: confirmation.compressionEnabled };
+        try {
+          onSubscriptionConfirmed(confirmation);
+        } catch (error) {
+          warn(`[AISStream] confirmation handler failed: ${scrub(error?.message || error)}`);
+        }
+      }
+      return;
+    }
+
     const accepted = Boolean(ingestEnvelope(parsed.envelope));
     if (!accepted) return; // valid JSON, but no AIS record — proves nothing
     runActions(owner, owner.onMessage(generation));
@@ -524,6 +592,7 @@ export function createAisStreamAdapter(options) {
       liveSockets: sockets.size,
       generations: [...sockets.keys()],
       generationHighWater,
+      lastConfirmation,
       watchdog: watchdog ? watchdog.debugState() : null,
     }),
   };

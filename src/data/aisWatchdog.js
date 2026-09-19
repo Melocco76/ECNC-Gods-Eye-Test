@@ -8,7 +8,8 @@
 // are all explicitly NOT liveness.
 //
 // Two budgets, deliberately decoupled, so the feed can be reported honestly
-// without thrashing the single connection AISStream allows per key:
+// without thrashing the connection (the app keeps ONE socket per process on
+// purpose; AISStream itself allows 3 subscribed per account / 3 open per IP):
 //
 //   staleMs         when to TELL the user the feed stopped delivering (fast)
 //   recycleAfterMs  when to actually hard-abort and reconnect     (slow)
@@ -152,6 +153,8 @@ export function createAisWatchdog(options = {}) {
   let silenceSinceMono = 0;
   /** Last DATA message. 0 = never — a handshake does not count. */
   let lastMessageWall = 0;
+  /** Last SubscriptionConfirmation (protocol activity, not data). 0 = never. */
+  let lastConfirmationWall = 0;
   /** Consecutive failed sessions since data last flowed. */
   let reconnectAttempt = 0;
   /** Monotonic deadline before which no new connect may be issued. */
@@ -302,8 +305,8 @@ export function createAisWatchdog(options = {}) {
       // data (onMessage) or a key rotation (configure).
       if (status === 'auth-failed') {
         // The probe is still bounded — on the auth cadence, not the silence
-        // budget — so a probe that opens and then says nothing cannot pin the
-        // one-connection-per-key slot indefinitely.
+        // budget — so a probe that opens and then says nothing cannot pin
+        // its connection slot indefinitely.
         if (monoNow - silenceSinceMono >= authProbeMs) {
           const actions = terminateOwned('auth-probe-expired');
           scheduleRetry('auth');
@@ -348,8 +351,7 @@ export function createAisWatchdog(options = {}) {
    * Deliberately touches NEITHER the silence clock nor the ladder: a handshake
    * is not data, and a socket that opens late then goes silent must recycle on
    * its original schedule. An orphan (a socket we already gave up on, opening
-   * late) is told to hang itself up so it cannot hold the one-connection-per-key
-   * slot.
+   * late) is told to hang itself up so it cannot hold a connection slot.
    */
   function onOpen(eventGeneration) {
     if (!ownsGeneration(eventGeneration)) {
@@ -375,6 +377,27 @@ export function createAisWatchdog(options = {}) {
     reconnectAttempt = 0;
     error = null;
     status = 'live';
+    return [];
+  }
+
+  /**
+   * AISStream confirmed our subscription (SubscriptionConfirmation). This is
+   * protocol activity — the credential and subscription were accepted — but NOT
+   * data: it restarts the silence window (once, per confirmed socket) and lifts
+   * a quiet-terminal label back to 'connecting', yet it never resets the retry
+   * ladder or claims 'live'. A server that confirms and then drops the socket
+   * therefore still walks the backoff ladder instead of looping fast.
+   */
+  function onConfirmation(eventGeneration) {
+    if (!ownsGeneration(eventGeneration)) {
+      return [{ type: 'terminate', generation: eventGeneration, reason: 'orphan' }];
+    }
+    silenceSinceMono = clock.mono();
+    lastConfirmationWall = clock.wall();
+    if (QUIET_TERMINAL.has(status)) {
+      status = 'connecting';
+      error = null;
+    }
     return [];
   }
 
@@ -417,6 +440,7 @@ export function createAisWatchdog(options = {}) {
     nextAttemptMono = 0;
     silenceSinceMono = 0;
     lastMessageWall = 0;
+    lastConfirmationWall = 0;
     error = null;
     keyFingerprint = null;
     // `generation` is intentionally NOT reset: a recycled generation would let
@@ -452,7 +476,9 @@ export function createAisWatchdog(options = {}) {
 
   /** Test/diagnostic view of internal ownership. */
   function debugState() {
-    return { status, owned, generation, reconnectAttempt, lastMessageAt: lastMessageWall };
+    return {
+      status, owned, generation, reconnectAttempt, lastMessageAt: lastMessageWall, lastConfirmationAt: lastConfirmationWall || null,
+    };
   }
 
   return {
@@ -460,6 +486,7 @@ export function createAisWatchdog(options = {}) {
     tick,
     onOpen,
     onMessage,
+    onConfirmation,
     onClose,
     onFailure,
     dispose,

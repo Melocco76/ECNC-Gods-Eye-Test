@@ -1340,6 +1340,13 @@ const AISSTREAM_DEFAULT_MESSAGE_TYPES = [
 ];
 const AISSTREAM_CACHE_MAX = 50000;
 const AISSTREAM_STALE_MS = 30 * 60 * 1000;
+/**
+ * How often (at most) the caches are swept for stale entries. Pruning happens
+ * opportunistically while messages arrive — no timer — and the caches are kept
+ * in last-update order, so a sweep only walks the stale head, never the whole
+ * map. The hard cap is enforced immediately, independent of this cadence.
+ */
+const AISSTREAM_PRUNE_INTERVAL_MS = 30_000;
 // Per-MMSI recent-path ring buffers (PRD WS-F F3). Float32 lat/lon (~1m
 // precision, fine for 25m thinning) + Uint32 epoch seconds ≈ 12B/sample;
 // 64 samples × 50k MMSIs worst case ≈ 38MB. Tracks exist only while the dev
@@ -1350,7 +1357,8 @@ const AIS_TRACK_MIN_MOVE_M = 25;
 // Watchdog budgets (policy lives in src/data/aisWatchdog.js). Silence is
 // REPORTED quickly and ACTED ON slowly: a dead feed must read as dead within
 // ~2 min, but recycling the socket is throttled so recovery can never become a
-// reconnect cycle against AISStream's one-connection-per-key limit.
+// reconnect cycle. (The app keeps one socket per process on purpose; AISStream
+// itself allows 3 subscribed connections per account and 3 open per IP.)
 const AISSTREAM_SILENCE_REPORT_MS = 120_000;
 /** Recycle threshold as a multiple of the report threshold. */
 const AISSTREAM_RECYCLE_RATIO = 2.5;
@@ -1394,8 +1402,15 @@ let _aisNeedsRearm = false;
 let _aisWebSocketImpl;
 /** @type {Map<string,object>} */
 const _aisStreamVessels = new Map();
-/** @type {Map<string,object>} */
+/**
+ * mmsi -> {name,type,destination,imo,_seenAt}. `_seenAt` is the last time ANY
+ * message for the vessel arrived, so static data shares the live cache's TTL.
+ * @type {Map<string,object>}
+ */
 const _aisStreamStatic = new Map();
+/** Epoch ms of the last cache sweep, and how many sweeps have run (diagnostics). */
+let _aisLastPruneAt = 0;
+let _aisPruneSweeps = 0;
 /** @type {Map<string,{lats:Float32Array,lons:Float32Array,times:Uint32Array,head:number,len:number}>} mmsi -> track ring buffer */
 const _aisStreamTracks = new Map();
 /** @type {Map<string,{lat:number,lon:number,epochSec:number}>} mmsi -> first fix awaiting second (lazy buffer allocation) */
@@ -6640,8 +6655,9 @@ const GEV_REALTIME_TOOLS = [
  * Node's built-in WebSocket cannot be used here: it has no terminate(), and
  * its close() waits forever for a close frame a black-holed peer never sends
  * (verified in src/data/aisWatchdogTransport.test.mjs). A socket parked in
- * CLOSING keeps holding AISStream's single per-key connection, which is how
- * the reverted watchdog wedged.
+ * CLOSING keeps holding a live connection slot on AISStream's side, which is
+ * how the reverted watchdog wedged. (The app keeps one socket per process on
+ * purpose, even though AISStream now allows 3 subscribed per account.)
  *
  * Loaded lazily rather than imported at the top of this file so a missing
  * optional dependency degrades the vessel feed honestly instead of breaking
@@ -6673,7 +6689,7 @@ function aisWebSocketImpl() {
  * setting AISSTREAM_SILENCE_TIMEOUT_MS to a value sized for that filter; 0 is
  * an explicit kill switch.
  */
-function aisWatchdogPolicy() {
+export function aisWatchdogPolicy() {
   if (_aisWatchdogPolicy) return _aisWatchdogPolicy;
   const customSubscription = Boolean(
     process.env.AISSTREAM_BOUNDING_BOXES || process.env.AISSTREAM_MESSAGE_TYPES,
@@ -6688,13 +6704,49 @@ function aisWatchdogPolicy() {
     reportMs,
     recycleMs: Math.round(reportMs * AISSTREAM_RECYCLE_RATIO),
     // Overridable so the watchdog can be exercised end-to-end against a local
-    // stand-in upstream without opening a connection to AISStream (which
-    // allows only one per key).
+    // stand-in upstream without opening a real AISStream connection (each one
+    // counts toward the 3-per-account / 3-per-IP limits).
     url: process.env.AISSTREAM_URL || AISSTREAM_URL,
   };
   return _aisWatchdogPolicy;
 }
 
+
+/**
+ * Options every AISStream socket is created with. permessage-deflate is requested
+ * explicitly: `ws` offers it by default, but AISStream applies bandwidth limits to
+ * uncompressed connections from September 2026, so it is asserted here rather than
+ * relied on implicitly. The subscription (and so the key) is not part of these options.
+ */
+export const AIS_SOCKET_OPTIONS = Object.freeze({ perMessageDeflate: true });
+
+/**
+ * Create the AISStream websocket. `WebSocketCtor` is injectable for tests.
+ * @param {string} url
+ * @param {Function|null} [WebSocketCtor]
+ */
+export function createAisWebSocket(url, WebSocketCtor = aisWebSocketImpl()) {
+  if (!WebSocketCtor) throw new Error('ws transport unavailable');
+  return new WebSocketCtor(url, { ...AIS_SOCKET_OPTIONS });
+}
+
+/** Scrub the AISStream key from text that is about to be logged or surfaced. */
+function redactAisKey(text) {
+  const key = process.env.AISSTREAM_API_KEY;
+  const value = String(text ?? '');
+  return key ? value.split(key).join('[redacted]') : value;
+}
+
+/** Log a confirmed subscription and whether compression was negotiated. No key, no payload. */
+export function logAisSubscriptionConfirmed({ compressionEnabled } = {}) {
+  if (compressionEnabled === true) {
+    console.log('[AISStream] subscription confirmed; permessage-deflate compression negotiated.');
+  } else if (compressionEnabled === false) {
+    console.warn('[AISStream] subscription confirmed, but compression was NOT negotiated; uncompressed connections are subject to AISStream bandwidth limits.');
+  } else {
+    console.warn('[AISStream] subscription confirmed; CompressionEnabled was not reported.');
+  }
+}
 
 /**
  * The transport adapter, built on first use and kept for the module lifetime.
@@ -6705,15 +6757,13 @@ function aisWatchdogPolicy() {
 function aisAdapter() {
   if (_aisAdapter) return _aisAdapter;
   _aisAdapter = createAisStreamAdapter({
-    createSocket: (url) => {
-      const WebSocketCtor = aisWebSocketImpl();
-      if (!WebSocketCtor) throw new Error('ws transport unavailable');
-      return new WebSocketCtor(url);
-    },
+    createSocket: (url) => createAisWebSocket(url),
     resolveUrl: () => aisWatchdogPolicy().url,
     buildSubscription: aisStreamSubscription,
     ingestEnvelope: ingestAisStreamEnvelope,
-    warn: (message) => console.warn(message),
+    warn: (message) => console.warn(redactAisKey(message)),
+    redact: redactAisKey,
+    onSubscriptionConfirmed: logAisSubscriptionConfirmed,
   });
   _aisAdapter.setWatchdogOptions(aisWatchdogBudgets());
   return _aisAdapter;
@@ -6818,7 +6868,7 @@ function disposeAisStream() {
   _aisNeedsRearm = true;
 }
 
-function aisStreamSubscription() {
+export function aisStreamSubscription() {
   return {
     APIKey: process.env.AISSTREAM_API_KEY,
     BoundingBoxes: parseJsonEnv('AISSTREAM_BOUNDING_BOXES', AISSTREAM_DEFAULT_BBOXES),
@@ -6837,7 +6887,7 @@ function aisStreamSubscription() {
  * @param {Object} envelope Parsed, non-error AIS envelope.
  * @returns {boolean} True when an AIS record was recognised.
  */
-function ingestAisStreamEnvelope(envelope) {
+export function ingestAisStreamEnvelope(envelope) {
   // Single shared recognition rule (also used by the adapter's tests), so the
   // liveness predicate that ships is the one under test. An envelope carrying
   // only an MMSI is not proof the feed works.
@@ -6848,14 +6898,20 @@ function ingestAisStreamEnvelope(envelope) {
   const metadata = envelope?.MetaData || envelope?.Metadata || {};
   const mmsi = stringValue(metadata.MMSI ?? message.UserID ?? message.UserId ?? message.Mmsi);
   if (!mmsi) return false;
+  const now = Date.now();
 
   if (messageType === 'ShipStaticData' || messageType === 'StaticDataReport') {
+    const previous = _aisStreamStatic.get(mmsi);
     const staticData = {
-      name: vesselNameFromAis(metadata, message, _aisStreamStatic.get(mmsi)),
-      type: vesselTypeFromAis(message, _aisStreamStatic.get(mmsi)),
+      name: vesselNameFromAis(metadata, message, previous),
+      type: vesselTypeFromAis(message, previous),
       destination: stringValue(message.Destination),
       imo: stringValue(message.ImoNumber ?? message.IMO),
+      _seenAt: now,
     };
+    // delete + set keeps the map in last-seen order (oldest first), which is
+    // what lets pruning walk only the stale head.
+    _aisStreamStatic.delete(mmsi);
     _aisStreamStatic.set(mmsi, staticData);
     mergeAisStaticIntoLiveVessel(mmsi, staticData);
   }
@@ -6864,9 +6920,19 @@ function ingestAisStreamEnvelope(envelope) {
   const lon = numberValue(metadata.longitude ?? metadata.Longitude ?? message.Longitude);
   // A positionless but well-formed record (static data) is still the feed
   // delivering AIS traffic, so it counts as liveness.
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return true;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    maybePruneAisStreamCache(now);
+    return true;
+  }
 
   const staticData = _aisStreamStatic.get(mmsi) || {};
+  if (staticData._seenAt !== undefined) {
+    // An active vessel keeps its enrichment alive.
+    staticData._seenAt = now;
+    _aisStreamStatic.delete(mmsi);
+    _aisStreamStatic.set(mmsi, staticData);
+  }
+  _aisStreamVessels.delete(mmsi); // re-insert at the fresh end (last-update order)
   _aisStreamVessels.set(mmsi, {
     lat,
     lon,
@@ -6882,12 +6948,12 @@ function ingestAisStreamEnvelope(envelope) {
     // Use the AIS message's own report time, not server ingest wall-clock —
     // trail spacing and dead reckoning depend on true fix epochs.
     last_position_epoch: aisEpochSeconds(metadata.time_utc ?? metadata.TimeUtc),
-    _updatedAt: Date.now(),
+    _updatedAt: now,
   });
 
   appendAisTrackSample(mmsi, lat, lon, aisEpochSeconds(metadata.time_utc ?? metadata.TimeUtc));
 
-  pruneAisStreamCache();
+  maybePruneAisStreamCache(now);
   return true;
 }
 
@@ -6996,7 +7062,7 @@ function vesselTypeFromAis(message, staticData = {}) {
   );
 }
 
-function aisStreamRows(maxRows) {
+export function aisStreamRows(maxRows) {
   const cutoff = Date.now() - AISSTREAM_STALE_MS;
   const rows = [];
   for (const row of _aisStreamVessels.values()) {
@@ -7006,27 +7072,91 @@ function aisStreamRows(maxRows) {
   return rows.slice(0, maxRows).map(({ _updatedAt, ...row }) => row);
 }
 
-function pruneAisStreamCache() {
-  const cutoff = Date.now() - AISSTREAM_STALE_MS;
-  for (const [mmsi, row] of _aisStreamVessels) {
-    if (row._updatedAt < cutoff) {
-      _aisStreamVessels.delete(mmsi);
-      _aisStreamTracks.delete(mmsi);
-      _aisStreamTrackPending.delete(mmsi);
-    }
+/** Remove one vessel and everything derived from it. */
+function evictAisVessel(mmsi) {
+  _aisStreamVessels.delete(mmsi);
+  _aisStreamTracks.delete(mmsi);
+  _aisStreamTrackPending.delete(mmsi);
+}
+
+/**
+ * Drop stale entries from the FRONT of a map that is kept in last-update order,
+ * stopping at the first fresh one — cost is proportional to what is removed,
+ * not to the size of the cache.
+ */
+function dropStaleHead(map, isStale, onDrop = null) {
+  for (const [key, value] of map) {
+    if (!isStale(value)) break;
+    map.delete(key);
+    if (onDrop) onDrop(key);
   }
+}
+
+/** Enforce the hard cap by evicting the oldest entries (no sort needed). */
+function enforceAisCap(map, onDrop = null) {
+  while (map.size > AISSTREAM_CACHE_MAX) {
+    const oldest = map.keys().next().value;
+    map.delete(oldest);
+    if (onDrop) onDrop(oldest);
+  }
+}
+
+/** Full TTL sweep across every AIS cache. Run at most once per prune interval. */
+function pruneAisStreamCache(now = Date.now()) {
+  _aisPruneSweeps += 1;
+  _aisLastPruneAt = now;
+  const cutoff = now - AISSTREAM_STALE_MS;
+  dropStaleHead(_aisStreamVessels, (row) => row._updatedAt < cutoff, evictAisVessel);
+  // Static metadata lives exactly as long as its vessel does (same TTL, refreshed
+  // by any message for that MMSI), so it cannot outlive the live cache.
+  dropStaleHead(_aisStreamStatic, (staticData) => staticData._seenAt < cutoff);
   // Pending single-fix entries for vessels never seen again must not leak
   const pendingCutoffSec = Math.floor(cutoff / 1000);
-  for (const [mmsi, pending] of _aisStreamTrackPending) {
-    if (pending.epochSec < pendingCutoffSec) _aisStreamTrackPending.delete(mmsi);
-  }
-  if (_aisStreamVessels.size <= AISSTREAM_CACHE_MAX) return;
-  const ordered = [..._aisStreamVessels.entries()].sort((a, b) => a[1]._updatedAt - b[1]._updatedAt);
-  for (const [mmsi] of ordered.slice(0, _aisStreamVessels.size - AISSTREAM_CACHE_MAX)) {
-    _aisStreamVessels.delete(mmsi);
-    _aisStreamTracks.delete(mmsi);
-    _aisStreamTrackPending.delete(mmsi);
-  }
+  dropStaleHead(_aisStreamTrackPending, (pending) => pending.epochSec < pendingCutoffSec);
+}
+
+/**
+ * Opportunistic pruning, called as messages arrive: a hard-cap check on every
+ * message (O(1) unless something must be evicted, and never a sort), and the
+ * TTL sweep at most once per AISSTREAM_PRUNE_INTERVAL_MS. No timer, no loop.
+ */
+function maybePruneAisStreamCache(now = Date.now()) {
+  if (_aisStreamVessels.size > AISSTREAM_CACHE_MAX) enforceAisCap(_aisStreamVessels, evictAisVessel);
+  if (_aisStreamStatic.size > AISSTREAM_CACHE_MAX) enforceAisCap(_aisStreamStatic);
+  if (now - _aisLastPruneAt >= AISSTREAM_PRUNE_INTERVAL_MS) pruneAisStreamCache(now);
+}
+
+/** Forget the cached watchdog policy so a test can re-read the environment. */
+export function resetAisWatchdogPolicyForTest() {
+  _aisWatchdogPolicy = null;
+}
+
+/** Cache limits, exported so tests assert against the shipped values. */
+export const AIS_CACHE_LIMITS = Object.freeze({
+  maxVessels: AISSTREAM_CACHE_MAX,
+  staleMs: AISSTREAM_STALE_MS,
+  pruneIntervalMs: AISSTREAM_PRUNE_INTERVAL_MS,
+});
+
+/** Sizes of every AIS cache plus the number of full sweeps run (diagnostics/tests). */
+export function aisCacheDiagnostics() {
+  return {
+    vessels: _aisStreamVessels.size,
+    static: _aisStreamStatic.size,
+    tracks: _aisStreamTracks.size,
+    pending: _aisStreamTrackPending.size,
+    sweeps: _aisPruneSweeps,
+  };
+}
+
+/** Empty every AIS cache (tests). */
+export function resetAisStreamCacheForTest() {
+  _aisStreamVessels.clear();
+  _aisStreamStatic.clear();
+  _aisStreamTracks.clear();
+  _aisStreamTrackPending.clear();
+  _aisLastPruneAt = 0;
+  _aisPruneSweeps = 0;
 }
 
 function newestAisPositionAt(rows) {

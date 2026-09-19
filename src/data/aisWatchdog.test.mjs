@@ -29,7 +29,8 @@ function fakeClock(startWall = 1_700_000_000_000, startMono = 10_000) {
 
 /**
  * Drive a watchdog, recording every action in order and asserting the
- * single-socket invariant on each connect.
+ * single-socket invariant on each connect (the app's own rule: one live socket
+ * per process, well inside AISStream's 3-per-account / 3-per-IP limits).
  */
 function harness(options = {}) {
   const time = fakeClock();

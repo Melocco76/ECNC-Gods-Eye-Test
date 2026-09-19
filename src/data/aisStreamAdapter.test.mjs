@@ -175,7 +175,7 @@ test('P0: a pre-disposal close event cannot erase the post-disposal socket', asy
   assert.deepEqual(debug.generations, [2]);
   assert.equal(second.terminated, false, 'the replacement was not hung up');
   assert.equal(context.transport.created.length, 2, 'no third socket was opened');
-  assert.equal(context.transport.openConnections(), 1, 'single-socket invariant holds');
+  assert.equal(context.transport.openConnections(), 1, 'single-socket invariant holds (deliberate: AISStream allows more, we keep one per process)');
 });
 
 test('P0: the same interleaving without an explicit re-arm is equally safe', async () => {
@@ -209,7 +209,7 @@ test('P0: the generation namespace never repeats across many disposals', async (
   assert.equal(seen.size, 6);
 });
 
-test('P0: at most one connection is ever open across a full failure cycle', async () => {
+test('P0: at most one connection is ever open across a full failure cycle (our own single-socket invariant)', async () => {
   const context = setup();
   await goLive(context);
 

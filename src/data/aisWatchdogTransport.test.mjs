@@ -96,7 +96,8 @@ test('ws.terminate() hard-aborts a black-holed socket and frees the connection s
   assert.equal(socket.readyState, WebSocketImpl.CLOSED);
 
   // The TCP connection is genuinely gone — this is what protects AISStream's
-  // one-connection-per-key limit when the watchdog recycles.
+  // connection-slot budget (AISStream counts open connections per account and IP)
+  // when the watchdog recycles.
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(blackHole.liveConnections, 0, 'the socket slot must actually be released');
 });
@@ -127,7 +128,7 @@ test('the built-in WebSocket close() never completes on a black-holed socket', a
   assert.equal(socket.readyState, WebSocket.CLOSING, 'the socket slot is never handed back');
 });
 
-test('a terminated socket hands the single connection slot straight to its replacement', async () => {
+test('a terminated socket hands the single connection slot straight to its replacement (single-socket invariant)', async () => {
   const first = new WebSocketImpl(url);
   await new Promise((resolve) => first.once('open', resolve));
   first.terminate();
