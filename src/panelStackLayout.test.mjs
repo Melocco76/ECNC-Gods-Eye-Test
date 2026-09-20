@@ -257,12 +257,12 @@ test('expanded left panels integrate their headers with the container shell', ()
   );
 });
 
-test('Map Source uses five compact tiles in the bottom Visual Presets tray', () => {
+test('Map Source keeps five compact tiles; it now lives in the Layers drawer MAP group', () => {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 
   assert.doesNotMatch(html, /id="stack-panel"/);
-  assert.match(html, /id="control-panel"[\s\S]*?class="map-source-section"[\s\S]*?id="map-stack-chips"/);
+  assert.match(html, /id="layer-drawer"[\s\S]*?data-drawer-group="map"[\s\S]*?class="map-source-section"[\s\S]*?id="map-stack-chips"/);
   assert.match(
     css,
     /\.map-stack-chip-row\s*\{[\s\S]*?grid-template-columns:\s*repeat\(5, minmax\(0, 1fr\)\);/,

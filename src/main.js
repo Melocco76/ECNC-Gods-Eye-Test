@@ -16,6 +16,7 @@ import militaryInstallationsLayer from './data/militaryInstallations.js';
 import militaryAwarenessLayer from './data/militaryAwareness.js';
 import radarOverlayLayer from './data/radarOverlay.js';
 import localDataLayers from './data/localLayers.js';
+import { initLayerDrawer } from './layerDrawer.js';
 import { LAYER_STATE_REGISTRY } from './data/layerState.js';
 import { registerDataCredits } from './data/dataCredits.js';
 import { SceneDirector } from './scenes/director.js';
@@ -317,6 +318,10 @@ async function init() {
     // already hidden, and waiting for the next transition would leave the
     // loop burning behind a hidden tab. (perf wave 2 fix)
     syncVisibilitySuspension();
+
+    // Header + Layers drawer wiring. After the UI has initialised: ui.js parks the
+    // Display panel in the right rail during its own init, and this moves it on.
+    initLayerDrawer({ viewer });
 
     window.__godsEyeView = {
       viewer,

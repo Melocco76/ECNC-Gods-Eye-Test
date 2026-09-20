@@ -44,6 +44,7 @@ import {
   getFocusTarget,
 } from './focusDeemphasis.js';
 import { requestWorldFocus } from '../worldFocus.js';
+import { buildAisCoverageModel, fetchAisRegionsStatus } from './aisCoverageStatus.js';
 import { holdContinuousRender, releaseContinuousRender } from '../renderGovernor.js';
 
 const FOCUS_EVIDENCE_DEV = import.meta.env?.DEV === true;
@@ -335,6 +336,25 @@ function currentGeoidN(lat, lon) {
 /** @type {Map<string, string>} `${cssColor}:${variant}` -> chevron SVG data URL */
 const shipIconCache = new Map();
 
+/** Read-only regional coverage for the row (null = legacy mode / unknown). */
+let _coverageModel = null;
+let _rowControlsListener = null;
+
+function setCoverageModel(model) {
+  const next = model ? JSON.stringify(model) : null;
+  const prev = _coverageModel ? JSON.stringify(_coverageModel) : null;
+  _coverageModel = model;
+  if (next !== prev) {
+    try { _rowControlsListener?.(); } catch { /* a listener must never break the poll */ }
+  }
+}
+
+/** One GET when the layer turns on; live updates then ride the /api/ais-live coverage block. */
+async function loadRegionalCoverageStatus() {
+  const status = await fetchAisRegionsStatus();
+  if (status && state.enabled) setCoverageModel(buildAisCoverageModel(status));
+}
+
 const aisLiveVesselsLayer = {
   id: 'ais-live-vessels',
   name: 'Live AIS Vessels',
@@ -352,10 +372,22 @@ const aisLiveVesselsLayer = {
     restoreSpriteOrder(viewer);
   },
 
+  /** Row descriptor for the data-layer panel: read-only regional coverage. */
+  getRowControls() {
+    return _coverageModel ? { coverage: _coverageModel } : null;
+  },
+
+  setRowControlsListener(listener) {
+    _rowControlsListener = typeof listener === 'function' ? listener : null;
+  },
+
   enable(viewer) {
     const wasEnabled = state.enabled;
     state.enabled = true;
-    if (!wasEnabled) beginAisSession();
+    if (!wasEnabled) {
+      beginAisSession();
+      void loadRegionalCoverageStatus();
+    }
     holdContinuousRender('ais-vessels'); // per-frame animator (perf wave 2)
     const activeViewer = viewer || state.viewer;
     ensureCollections(activeViewer);
@@ -897,6 +929,10 @@ function ownsAisRequest(controller, sessionId) {
 
 /** Apply a classified snapshot while preserving warm state on zero accepted rows. */
 function applyAisFeedSnapshot(viewer, payload) {
+  // Additive `coverage` block; absent on older servers, empty in legacy mode.
+  if (payload && typeof payload === 'object' && 'coverage' in payload) {
+    setCoverageModel(buildAisCoverageModel(payload.coverage));
+  }
   const snapshot = classifyAisFeedSnapshot(payload);
   state.loaded = true;
   state.loadingLabel = '';

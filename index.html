@@ -22,35 +22,212 @@
     <div id="world-overlay-status" role="status" aria-live="polite" aria-atomic="true"></div>
   </div>
 
-  <!-- Title -->
-  <div id="title-bar">
-    <!-- Brand slot: drop an ECNC logo <img> in here (or set data-logo-src) later.
-         Empty and collapsed until then; the eye mark below is the temporary secondary mark. -->
-    <h1><span id="ecnc-brand-slot" class="brand-slot" data-brand-slot></span><span class="title-logo brand-logo" data-logo-gaze data-logo-src="/logo.svg" aria-hidden="true"><img src="/logo.svg" alt="" /></span> <span>ECNC God's Eye</span></h1>
-    <p class="subtitle">Technology demonstration based on God's Eye View by Bilawal Sidhu</p>
-  </div>
+  <!-- Desktop header (about 56px). #title-bar keeps its id; the eye mark and brand slot live inside it. -->
+  <header id="app-header">
+    <div id="title-bar">
+      <!-- Brand slot: drop an ECNC logo <img> in here (or set data-logo-src) later.
+           Empty and collapsed until then; the eye mark below is the temporary secondary mark. -->
+      <h1><span id="ecnc-brand-slot" class="brand-slot" data-brand-slot></span><span class="title-logo brand-logo" data-logo-gaze data-logo-src="/logo.svg" aria-hidden="true"><img src="/logo.svg" alt="" /></span> <span>ECNC God's Eye</span></h1>
+      <p class="subtitle">Technology demonstration based on God's Eye View by Bilawal Sidhu</p>
+    </div>
 
-  <!-- Style indicator -->
-  <div id="style-indicator">
-    <span class="indicator-label">ACTIVE STYLE</span>
-    <span class="indicator-value" id="active-style-name">NORMAL</span>
-  </div>
+    <div id="app-header-center">
+      <div id="app-header-status" aria-label="Current map">
+        <span id="app-header-map-mode">Map</span>
+        <span class="app-header-sep" aria-hidden="true">·</span>
+        <span id="app-header-altitude">--</span>
+      </div>
+      <div id="app-header-search"></div>
+    </div>
+    <nav id="app-header-actions" aria-label="Main controls">
+      <button type="button" id="layers-btn" class="app-header-btn" aria-expanded="false" aria-controls="layer-drawer">
+        <span class="material-symbols-outlined" aria-hidden="true">layers</span><span class="app-header-btn-label">Layers</span>
+      </button>
+      <button type="button" id="look-btn" class="app-header-btn" aria-expanded="false" aria-controls="layer-drawer">
+        <span class="material-symbols-outlined" aria-hidden="true">palette</span><span class="app-header-btn-label">Look</span>
+      </button>
+      <button type="button" id="about-btn" class="app-header-btn" aria-haspopup="dialog" aria-controls="about-dialog" aria-expanded="false">
+        <span class="material-symbols-outlined" aria-hidden="true">info</span><span class="app-header-btn-label">About</span>
+      </button>
+      <span id="app-header-clock" title="UTC time"><span class="visually-hidden">UTC </span><span id="app-header-clock-value">--:--:--</span>Z</span>
+    </nav>
+  </header>
 
-  <!-- Top-center camera and share actions -->
-  <nav id="top-center-actions" aria-label="Globe actions">
-    <button id="clear-selected-layers" type="button" aria-label="Clear selected data layers" title="Turn off all selected data layers">
-      <span class="material-symbols-outlined" aria-hidden="true">layers_clear</span>
-    </button>
-    <button id="share-btn" type="button" aria-label="Copy share link" title="Copy share link">
-      <span class="share-icon" aria-hidden="true">&#x1F517;</span>
-    </button>
-    <button id="reset-globe-view" type="button" aria-label="Reset to full globe view" title="Reset camera and return to full globe view">
-      <span class="material-symbols-outlined" aria-hidden="true">public</span>
-    </button>
-    <button id="map-weather-toggle" type="button" aria-label="Local weather" aria-pressed="false" aria-controls="map-weather-card" title="Show local weather">
-      <span class="material-symbols-outlined" aria-hidden="true">partly_cloudy_day</span>
-    </button>
-  </nav>
+  <!-- Layers drawer: accordion groups. The data rows are rendered into the group bodies by the
+       DataLayerManager (ids and handlers unchanged); MAP / TOOLS / LOOK hold the moved controls. -->
+  <aside id="layer-drawer" aria-labelledby="layer-drawer-title" hidden>
+    <header class="drawer-head">
+      <h2 id="layer-drawer-title">Layers</h2>
+      <button type="button" id="layer-drawer-close" class="drawer-close" aria-label="Close layers panel"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+    </header>
+    <div class="drawer-scroll">
+      <div id="data-toggles" class="data-toggle-list drawer-data-groups">
+      <section class="drawer-group" data-drawer-group="live">
+        <h3 class="drawer-group-heading">
+          <button type="button" class="drawer-group-toggle" id="drawer-toggle-live" aria-expanded="true" aria-controls="drawer-body-live">
+            <span class="drawer-group-name">Live</span>
+            <span class="drawer-group-count" data-group-count></span>
+            <span class="material-symbols-outlined drawer-chevron" aria-hidden="true">expand_more</span>
+          </button>
+        </h3>
+        <div class="drawer-group-body" id="drawer-body-live" data-group-body="live" role="region" aria-labelledby="drawer-toggle-live">
+        </div>
+      </section>
+      <section class="drawer-group" data-drawer-group="weather">
+        <h3 class="drawer-group-heading">
+          <button type="button" class="drawer-group-toggle" id="drawer-toggle-weather" aria-expanded="false" aria-controls="drawer-body-weather">
+            <span class="drawer-group-name">Weather &amp; hazards</span>
+            <span class="drawer-group-count" data-group-count></span>
+            <span class="material-symbols-outlined drawer-chevron" aria-hidden="true">expand_more</span>
+          </button>
+        </h3>
+        <div class="drawer-group-body" id="drawer-body-weather" data-group-body="weather" role="region" aria-labelledby="drawer-toggle-weather" hidden>
+        </div>
+      </section>
+      <section class="drawer-group" data-drawer-group="infrastructure">
+        <h3 class="drawer-group-heading">
+          <button type="button" class="drawer-group-toggle" id="drawer-toggle-infrastructure" aria-expanded="false" aria-controls="drawer-body-infrastructure">
+            <span class="drawer-group-name">Infrastructure</span>
+            <span class="drawer-group-count" data-group-count></span>
+            <span class="material-symbols-outlined drawer-chevron" aria-hidden="true">expand_more</span>
+          </button>
+        </h3>
+        <div class="drawer-group-body" id="drawer-body-infrastructure" data-group-body="infrastructure" role="region" aria-labelledby="drawer-toggle-infrastructure" hidden>
+        </div>
+      </section>
+      <section class="drawer-group" data-drawer-group="space">
+        <h3 class="drawer-group-heading">
+          <button type="button" class="drawer-group-toggle" id="drawer-toggle-space" aria-expanded="false" aria-controls="drawer-body-space">
+            <span class="drawer-group-name">Space</span>
+            <span class="drawer-group-count" data-group-count></span>
+            <span class="material-symbols-outlined drawer-chevron" aria-hidden="true">expand_more</span>
+          </button>
+        </h3>
+        <div class="drawer-group-body" id="drawer-body-space" data-group-body="space" role="region" aria-labelledby="drawer-toggle-space" hidden>
+        </div>
+      </section>
+      </div>
+      <section class="drawer-group" data-drawer-group="map">
+        <h3 class="drawer-group-heading">
+          <button type="button" class="drawer-group-toggle" id="drawer-toggle-map" aria-expanded="false" aria-controls="drawer-body-map">
+            <span class="drawer-group-name">Map</span>
+            <span class="drawer-group-count" data-group-count></span>
+            <span class="material-symbols-outlined drawer-chevron" aria-hidden="true">expand_more</span>
+          </button>
+        </h3>
+        <div class="drawer-group-body" id="drawer-body-map" role="region" aria-labelledby="drawer-toggle-map" hidden>
+          <section class="map-source-section" aria-labelledby="map-source-label">
+            <div class="map-source-heading">
+              <span id="map-source-label">MAP SOURCE</span>
+              <span id="map-stack-status" class="pp-stack-status" aria-live="polite">3D</span>
+            </div>
+            <div id="map-stack-chips" class="map-stack-chip-row" role="group" aria-label="Map source"></div>
+          </section>
+        </div>
+      </section>
+      <section class="drawer-group" data-drawer-group="tools">
+        <h3 class="drawer-group-heading">
+          <button type="button" class="drawer-group-toggle" id="drawer-toggle-tools" aria-expanded="false" aria-controls="drawer-body-tools">
+            <span class="drawer-group-name">Tools</span>
+            <span class="drawer-group-count" data-group-count></span>
+            <span class="material-symbols-outlined drawer-chevron" aria-hidden="true">expand_more</span>
+          </button>
+        </h3>
+        <div class="drawer-group-body" id="drawer-body-tools" role="region" aria-labelledby="drawer-toggle-tools" hidden>
+      <nav id="top-center-actions" aria-label="Globe actions">
+        <button id="clear-selected-layers" type="button" data-drawer-label="Clear all layers" aria-label="Clear selected data layers" title="Turn off all selected data layers">
+          <span class="material-symbols-outlined" aria-hidden="true">layers_clear</span>
+        </button>
+        <button id="share-btn" type="button" data-drawer-label="Copy share link" aria-label="Copy share link" title="Copy share link">
+          <span class="share-icon" aria-hidden="true">&#x1F517;</span>
+        </button>
+        <button id="reset-globe-view" type="button" data-drawer-label="Reset to full globe" aria-label="Reset to full globe view" title="Reset camera and return to full globe view">
+          <span class="material-symbols-outlined" aria-hidden="true">public</span>
+        </button>
+        <button id="map-weather-toggle" type="button" data-drawer-label="Local weather" aria-label="Local weather" aria-pressed="false" aria-controls="map-weather-card" title="Show local weather">
+          <span class="material-symbols-outlined" aria-hidden="true">partly_cloudy_day</span>
+        </button>
+      </nav>
+          <div class="drawer-tool-list" role="group" aria-label="Panels">
+            <button type="button" class="drawer-tool-btn" data-drawer-focus-search><span class="material-symbols-outlined" aria-hidden="true">search</span><span>Search places</span></button>
+            <button type="button" class="drawer-tool-btn" data-open-panel="scene-panel"><span class="material-symbols-outlined" aria-hidden="true">movie</span><span>Scenes</span></button>
+            <button type="button" class="drawer-tool-btn" data-open-panel="cctv-panel"><span class="material-symbols-outlined" aria-hidden="true">videocam</span><span>CCTV camera panel</span></button>
+            <button type="button" class="drawer-tool-btn" data-open-panel="global-context-panel"><span class="material-symbols-outlined" aria-hidden="true">radar</span><span>Context</span></button>
+          </div>
+        </div>
+      </section>
+      <section class="drawer-group" data-drawer-group="look">
+        <h3 class="drawer-group-heading">
+          <button type="button" class="drawer-group-toggle" id="drawer-toggle-look" aria-expanded="false" aria-controls="drawer-body-look">
+            <span class="drawer-group-name">Look</span>
+            <span class="drawer-group-count" data-group-count></span>
+            <span class="material-symbols-outlined drawer-chevron" aria-hidden="true">expand_more</span>
+          </button>
+        </h3>
+        <div class="drawer-group-body" id="drawer-body-look" role="region" aria-labelledby="drawer-toggle-look" hidden>
+      <div id="style-indicator">
+        <span class="indicator-label">Current look</span>
+        <span class="indicator-value" id="active-style-name">NORMAL</span>
+      </div>
+
+          <div id="style-buttons" class="button-grid">
+            <button class="style-btn active" data-style="normal">
+              <span class="btn-icon">◯</span>
+              <span class="btn-label">Default</span>
+              <span class="btn-key">1</span>
+            </button>
+            <button class="style-btn" data-style="retro">
+              <span class="btn-icon">▦</span>
+              <span class="btn-label">Retro</span>
+              <span class="btn-key">2</span>
+            </button>
+            <button class="style-btn" data-style="surveillance">
+              <span class="btn-icon">🌙</span>
+              <span class="btn-label">Night vision</span>
+              <span class="btn-key">3</span>
+            </button>
+            <button class="style-btn" data-style="thermal">
+              <span class="btn-icon">🌡️</span>
+              <span class="btn-label">Thermal</span>
+              <span class="btn-key">4</span>
+            </button>
+            <button class="style-btn" data-style="anime">
+              <span class="btn-icon">✦</span>
+              <span class="btn-label">Anime</span>
+              <span class="btn-key">5</span>
+            </button>
+            <button class="style-btn" data-style="noir">
+              <span class="btn-icon">◐</span>
+              <span class="btn-label">Noir</span>
+              <span class="btn-key">6</span>
+            </button>
+            <button class="style-btn" data-style="snow">
+              <span class="btn-icon">❄</span>
+              <span class="btn-label">Snow</span>
+              <span class="btn-key">7</span>
+            </button>
+          </div>
+          <!-- The Display controls (#pp-toggles) are moved here at runtime by src/layerDrawer.js. -->
+          <div id="drawer-look-display"></div>
+        </div>
+      </section>
+    </div>
+  </aside>
+
+  <!-- About / credits. Populated from DATA_CREDITS the first time it opens. -->
+  <aside id="about-dialog" role="dialog" aria-labelledby="about-dialog-title" hidden>
+    <header class="drawer-head">
+      <h2 id="about-dialog-title">About ECNC God's Eye</h2>
+      <button type="button" id="about-dialog-close" class="drawer-close" aria-label="Close about"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+    </header>
+    <div class="about-body">
+      <p class="about-credit">ECNC God's Eye &mdash; technology demonstration based on God's Eye View by Bilawal Sidhu.</p>
+      <p>Tech is Secondary; People are Primary.</p>
+      <p>Released under the MIT License. Upstream project: God's Eye View by Bilawal Sidhu (Halfpixel).</p>
+      <h3>Data and imagery credits</h3>
+      <ul id="about-credits-list"></ul>
+    </div>
+  </aside>
   <aside id="map-weather-card" aria-label="Local weather at the view centre" data-status="unavailable" hidden>
     <header class="map-weather-head">
       <span class="map-weather-title">WEATHER</span>
@@ -519,50 +696,6 @@
       </button>
       <div id="control-panel-popover" class="dock-popover-content">
       <button class="dock-pin-btn" data-pin-target="control-panel" type="button" aria-label="Pin visual presets" aria-pressed="false" title="Keep visual presets open"><img src="/pin.svg" alt="" /></button>
-      <div id="style-buttons" class="button-grid">
-        <button class="style-btn active" data-style="normal">
-          <span class="btn-icon">◯</span>
-          <span class="btn-label">Normal</span>
-          <span class="btn-key">1</span>
-        </button>
-        <button class="style-btn" data-style="retro">
-          <span class="btn-icon">▦</span>
-          <span class="btn-label">CRT</span>
-          <span class="btn-key">2</span>
-        </button>
-        <button class="style-btn" data-style="surveillance">
-          <span class="btn-icon">🌙</span>
-          <span class="btn-label">NVG</span>
-          <span class="btn-key">3</span>
-        </button>
-        <button class="style-btn" data-style="thermal">
-          <span class="btn-icon">🌡️</span>
-          <span class="btn-label">FLIR</span>
-          <span class="btn-key">4</span>
-        </button>
-        <button class="style-btn" data-style="anime">
-          <span class="btn-icon">✦</span>
-          <span class="btn-label">Anime</span>
-          <span class="btn-key">5</span>
-        </button>
-        <button class="style-btn" data-style="noir">
-          <span class="btn-icon">◐</span>
-          <span class="btn-label">Noir</span>
-          <span class="btn-key">6</span>
-        </button>
-        <button class="style-btn" data-style="snow">
-          <span class="btn-icon">❄</span>
-          <span class="btn-label">Snow</span>
-          <span class="btn-key">7</span>
-        </button>
-      </div>
-      <section class="map-source-section" aria-labelledby="map-source-label">
-        <div class="map-source-heading">
-          <span id="map-source-label">MAP SOURCE</span>
-          <span id="map-stack-status" class="pp-stack-status" aria-live="polite">3D</span>
-        </div>
-        <div id="map-stack-chips" class="map-stack-chip-row" role="group" aria-label="Map source"></div>
-      </section>
       </div>
       <div id="style-mini-status" class="panel-mini-status" aria-live="polite">
         <span class="panel-mini-label">Style</span>
@@ -611,7 +744,7 @@
         <span class="panel-divider"></span>
         <button class="panel-collapse-btn" data-collapse-target="data-panel" title="Collapse panel">+</button>
       </div>
-      <div id="data-toggles" class="data-toggle-list"></div>
+      <!-- #data-toggles now lives in the Layers drawer (see #layer-drawer). -->
     </div>
   </div>
 

@@ -1,3 +1,4 @@
+import { groupIdForLayer, orderLayersForDrawer } from '../layerGroups.js';
 import { governorRequestRender } from '../renderGovernor.js';
 import { markDetectionSourcesChanged } from './detection.js';
 function cloneLayerParams(value) {
@@ -2018,11 +2019,52 @@ export class DataLayerManager {
     this._renderToggles();
   }
 
+  /**
+   * Drawer group bodies inside the toggle container (`[data-group-body]`), or
+   * null when the container is a plain list. Grouping is presentation only:
+   * rows are the same nodes with the same handlers, just filed under a heading.
+   * @returns {Map<string, HTMLElement>|null}
+   */
+  _groupBodies() {
+    const container = this._toggleContainer;
+    if (typeof container?.querySelectorAll !== 'function') return null;
+    const bodies = new Map();
+    for (const node of container.querySelectorAll('[data-group-body]')) {
+      bodies.set(node.dataset.groupBody, node);
+    }
+    return bodies.size ? bodies : null;
+  }
+
+  /** Per-group "N on" badge and empty-group hiding, in the drawer headings. */
+  _syncGroupBadges() {
+    const container = this._toggleContainer;
+    if (typeof container?.querySelectorAll !== 'function') return;
+    for (const section of container.querySelectorAll('[data-drawer-group]')) {
+      const body = section.querySelector('[data-group-body]');
+      if (!body) continue;
+      const rows = body.querySelectorAll('.data-toggle-row');
+      const on = body.querySelectorAll('.data-toggle-btn.active').length;
+      const badge = section.querySelector('[data-group-count]');
+      if (badge) badge.textContent = on > 0 ? `${on} on` : '';
+      section.hidden = rows.length === 0;
+    }
+  }
+
   _renderToggles() {
     if (!this._toggleContainer) return;
-    this._toggleContainer.innerHTML = '';
+    const groupBodies = this._groupBodies();
+    if (groupBodies) {
+      // Only the generated rows are cleared: a group body may also hold
+      // static controls that belong to the drawer, not to the manager.
+      for (const body of groupBodies.values()) {
+        for (const stale of [...body.querySelectorAll('.data-toggle-row')]) stale.remove();
+      }
+    } else {
+      this._toggleContainer.innerHTML = '';
+    }
 
-    for (const layer of this.getAll()) {
+    const layersInOrder = groupBodies ? orderLayersForDrawer(this.getAll()) : this.getAll();
+    for (const layer of layersInOrder) {
       if (!layer.showInTogglePanel) continue;
       const row = document.createElement('div');
       row.className = 'data-toggle-row';
@@ -2102,8 +2144,12 @@ export class DataLayerManager {
         this._syncRowControls(controls, layer);
       }
 
-      this._toggleContainer.appendChild(row);
+      const target = groupBodies
+        ? (groupBodies.get(groupIdForLayer(layer.id)) || [...groupBodies.values()][0])
+        : this._toggleContainer;
+      target.appendChild(row);
     }
+    this._syncGroupBadges();
   }
 
   /**
@@ -2143,8 +2189,9 @@ export class DataLayerManager {
     const chips = controls?.chips || [];
     const legend = controls?.legend || [];
     container.hidden = chips.length === 0 && legend.length === 0
-      && !controls?.slider && !controls?.note;
+      && !controls?.slider && !controls?.note && !controls?.coverage;
     this._syncRowSlider(container, controls);
+    this._syncRowCoverage(container, controls);
 
     for (const node of [...container.children]) {
       if (String(node.className).split(/\s+/).includes('data-toggle-legend-item')) node.remove();
@@ -2186,6 +2233,56 @@ export class DataLayerManager {
       entry.append(swatch, text);
       container.appendChild(entry);
     }
+  }
+
+  /**
+   * Optional READ-ONLY coverage summary (used by the AIS row): a label, one
+   * item per active coverage area, an "updating" marker while a change is in
+   * flight, and an empty slot reserved for future owner-only controls. It holds
+   * no inputs and no listeners, so it is simply replaced when it changes.
+   * @param {HTMLElement} container The row's `.data-toggle-controls` node.
+   * @param {{coverage?: {label?: string, items: {id: string, label: string}[], applying?: boolean}}|null} controls
+   */
+  _syncRowCoverage(container, controls) {
+    const existing = [...container.children].find((node) => node.dataset?.controlKind === 'coverage') || null;
+    const coverage = controls?.coverage || null;
+    if (!coverage) {
+      existing?.remove();
+      return;
+    }
+    const signature = JSON.stringify([coverage.label, coverage.items, Boolean(coverage.applying)]);
+    if (existing && existing.dataset.signature === signature) return;
+    const node = document.createElement('div');
+    node.className = 'data-toggle-coverage';
+    node.dataset.controlKind = 'coverage';
+    node.dataset.signature = signature;
+    const label = document.createElement('span');
+    label.className = 'data-toggle-coverage-label';
+    label.textContent = coverage.label || 'Coverage';
+    const list = document.createElement('ul');
+    list.className = 'data-toggle-coverage-list';
+    for (const item of coverage.items || []) {
+      const li = document.createElement('li');
+      li.dataset.regionId = String(item.id);
+      li.textContent = item.label;
+      list.appendChild(li);
+    }
+    node.append(label, list);
+    if (coverage.applying) {
+      const status = document.createElement('span');
+      status.className = 'data-toggle-coverage-status';
+      status.setAttribute('role', 'status');
+      status.textContent = 'Updating coverage…';
+      node.appendChild(status);
+    }
+    // Reserved for the future owner-only region switches. Intentionally empty:
+    // no write controls exist until owner authentication does.
+    const slot = document.createElement('div');
+    slot.className = 'data-toggle-coverage-slot';
+    slot.dataset.regionControlsSlot = '';
+    node.appendChild(slot);
+    if (existing) existing.replaceWith(node);
+    else container.appendChild(node);
   }
 
   /**
@@ -2289,6 +2386,7 @@ export class DataLayerManager {
 
       this._syncRowControls(row.querySelector('.data-toggle-controls'), layer);
     }
+    this._syncGroupBadges();
   }
 
   _buildMetaText(layer) {

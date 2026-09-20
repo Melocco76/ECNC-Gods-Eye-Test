@@ -9763,3 +9763,319 @@ summary:focus-visible {
   .loader-logo,
   .loader-status { animation: none; }
 }
+
+/* ══ ECNC God's Eye - Phase 2: desktop header + Layers drawer ═══════════════
+   The header replaces the old title / ACTIVE STYLE / floating icon buttons.
+   The drawer holds the (unchanged) data rows and the moved map-source, look
+   and tool controls. Layout only: ids, handlers and state are untouched. */
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+#app-header {
+  --app-header-height: 56px;
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 130;
+  box-sizing: border-box;
+  height: var(--app-header-height);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  background: var(--glass-bg);
+  border-bottom: 1px solid var(--glass-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+/* #title-bar keeps its id (radio-broadcast class, hide lists) but is now a flow item. */
+#app-header #title-bar {
+  position: static;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  background: none;
+  pointer-events: auto;
+}
+#app-header #title-bar h1 { font-size: 18px; gap: 10px; white-space: nowrap; }
+#app-header #title-bar .title-logo { width: 38px; }
+#app-header #title-bar .brand-slot { height: 28px; }
+#app-header #title-bar .subtitle {
+  display: block;
+  margin-top: 1px;
+  max-width: none;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 1279px) { #app-header #title-bar .subtitle { display: none; } }
+
+#app-header-center {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+#app-header-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+#app-header-altitude { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.app-header-sep { color: var(--text-dim); }
+
+#app-header-search { display: flex; align-items: center; min-width: 0; }
+#app-header-search .location-search-wrap { position: static; display: flex; align-items: center; gap: 6px; }
+#app-header #location-search {
+  width: min(280px, 24vw);
+  min-width: 140px;
+  height: 34px;
+  padding: 0 12px;
+  opacity: 1;
+  border-radius: 8px;
+  font-size: 14px;
+}
+#app-header-search .search-toggle-btn { width: 34px; height: 34px; }
+
+#app-header-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.app-header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font: 500 14px/1 var(--font-sans);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.app-header-btn:hover { background: rgba(255, 255, 255, 0.09); border-color: var(--glass-border-hover); }
+.app-header-btn[aria-expanded='true'],
+.app-header-btn.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+.app-header-btn .material-symbols-outlined { font-size: 20px; }
+#app-header-clock {
+  padding-left: 4px;
+  font: 500 13px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+@media (max-width: 1099px) { #app-header-clock { display: none; } }
+
+/* The Layers drawer. */
+#layer-drawer {
+  position: fixed;
+  top: 64px;
+  right: 12px;
+  z-index: 125;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 24px));
+  max-height: calc(100vh - 64px - 24px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg);
+  box-shadow: var(--panel-shadow);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  color: var(--text-primary);
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+#layer-drawer[hidden], #about-dialog[hidden] { display: none; }
+#layer-drawer.open { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { #layer-drawer { transition: none; transform: none; } }
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.drawer-head h2 { margin: 0; font: 600 16px/1.2 var(--font-sans); color: var(--text-primary); }
+.drawer-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; padding: 0;
+  border: 1px solid transparent; border-radius: 8px;
+  background: none; color: var(--text-secondary); cursor: pointer;
+}
+.drawer-close:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
+
+.drawer-scroll { overflow-y: auto; overscroll-behavior: contain; padding: 6px 8px 12px; scrollbar-width: thin; }
+#layer-drawer #data-toggles { overflow: visible; max-height: none; padding-right: 0; gap: 0; scrollbar-gutter: auto; }
+
+.drawer-group { border-bottom: 1px solid var(--glass-border); }
+.drawer-group:last-child { border-bottom: 0; }
+.drawer-group[hidden] { display: none; }
+.drawer-group-heading { margin: 0; }
+.drawer-group-toggle {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-primary);
+  font: 600 14px/1.2 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.drawer-group-toggle:hover { background: rgba(255, 255, 255, 0.05); }
+.drawer-group-name { flex: 1 1 auto; }
+.drawer-group-count { font: 500 12px/1 var(--font-sans); color: var(--accent); }
+.drawer-chevron { font-size: 20px; color: var(--text-secondary); transition: transform var(--transition-fast); }
+.drawer-group-toggle[aria-expanded='true'] .drawer-chevron { transform: rotate(180deg); }
+.drawer-group-body { padding: 2px 0 8px; }
+.drawer-group-body[hidden] { display: none; }
+
+/* Read-only AIS coverage (regional mode only). */
+.data-toggle-coverage { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.data-toggle-coverage-label { font-weight: 600; color: var(--text-primary); }
+.data-toggle-coverage-list { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 0; padding: 0; list-style: none; }
+.data-toggle-coverage-list li::before { content: '\2022\00a0'; color: var(--accent); }
+.data-toggle-coverage-status { flex-basis: 100%; color: var(--status-warn); }
+.data-toggle-coverage-status::before { content: '\21BB\00a0'; }
+.data-toggle-coverage-slot:empty { display: none; }
+
+.drawer-tool-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.drawer-tool-btn,
+#layer-drawer #top-center-actions button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font: 500 14px/1.2 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transform: none;
+}
+.drawer-tool-btn:hover,
+#layer-drawer #top-center-actions button:hover { background: rgba(255, 255, 255, 0.09); transform: none; }
+#layer-drawer #top-center-actions {
+  position: static;
+  transform: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#layer-drawer #top-center-actions button,
+#layer-drawer .drawer-inline-tool { border-radius: 8px; width: 100%; height: auto; }
+#layer-drawer .drawer-inline-tool {
+  display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; margin-bottom: 6px;
+  border: 1px solid var(--glass-border); background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary); font: 500 14px/1.2 var(--font-sans); text-align: left; cursor: pointer;
+}
+#layer-drawer .drawer-inline-tool[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); }
+#layer-drawer .drawer-inline-tool[aria-pressed='true'] .drawer-btn-label::after { content: ' \00b7 on'; }
+.drawer-btn-label { font: 500 14px/1.2 var(--font-sans); }
+
+/* MAP + LOOK content, restyled for the drawer. */
+#layer-drawer .map-source-section { margin: 0; }
+#layer-drawer .map-source-heading { display: flex; align-items: center; justify-content: space-between; margin: 0 0 6px; font: 600 13px/1.2 var(--font-sans); color: var(--text-secondary); }
+#layer-drawer #style-indicator { position: static; display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; text-align: left; pointer-events: auto; }
+#layer-drawer #style-indicator .indicator-label { display: inline; font: 500 12px/1 var(--font-sans); text-transform: none; letter-spacing: 0; }
+#layer-drawer #style-indicator .indicator-value { display: inline; margin: 0; font-size: 13px; }
+#layer-drawer #style-buttons { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 10px; }
+#layer-drawer #style-buttons .style-btn { width: 100%; min-height: 40px; }
+
+/* The Display panel, parked inside LOOK: flat, always expanded. */
+#pp-toggles.in-drawer {
+  position: static;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  align-items: stretch;
+}
+#pp-toggles.in-drawer > .pp-header-row { display: none; }
+#pp-toggles.in-drawer .pp-toggle-group,
+#pp-toggles.in-drawer > #clean-view-toggle { display: flex !important; flex-direction: column; width: 100%; }
+#pp-toggles.in-drawer > #param-slider-panel.active { display: block !important; }
+#pp-toggles.in-drawer .pp-toggle-btn { width: 100%; }
+
+/* The old panels whose contents now live in the drawer. */
+#data-panel, #control-panel { display: none !important; }
+
+/* About dialog. */
+#about-dialog {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  z-index: 140;
+  width: min(520px, calc(100vw - 24px));
+  max-height: calc(100vh - 72px - 80px);
+  overflow-y: auto;
+  transform: translateX(-50%);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg);
+  box-shadow: var(--panel-shadow);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  color: var(--text-primary);
+}
+#about-dialog .about-body { padding: 12px 16px 16px; font-size: 14px; line-height: 1.5; }
+#about-dialog .about-body h3 { margin: 14px 0 6px; font: 600 14px/1.2 var(--font-sans); }
+#about-dialog .about-credit { font-weight: 600; }
+#about-credits-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); }
+#about-credits-list li { margin-bottom: 4px; }
+#about-credits-list a { color: var(--accent); }
+
+/* Hidden with the rest of the chrome. */
+body.ui-clean-view :is(#app-header, #layer-drawer, #about-dialog),
+body.recording-mode :is(#app-header, #layer-drawer, #about-dialog),
+body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none !important; }
+
+/* Temporary phone behaviour (Phase 3 replaces this with a bottom sheet). */
+@media (max-width: 767px) {
+  #app-header { gap: 8px; padding: 0 8px; }
+  #app-header #title-bar h1 { font-size: 15px; gap: 6px; }
+  #app-header #title-bar .title-logo { width: 30px; }
+  #app-header-center { display: none; }
+  #app-header-actions { margin-left: auto; gap: 4px; }
+  .app-header-btn { padding: 0 8px; }
+  .app-header-btn-label { display: none; }
+  #layer-drawer { left: 8px; right: 8px; width: auto; top: 60px; max-height: calc(100vh - 60px - 76px); }
+}
+
+/* The header clock replaces the HUD's top-right UTC block on desktop. */
+@media (min-width: 768px) { #intel-hud .hud-top-right { display: none; } }
+
+/* Map source chips wrap inside the drawer instead of squeezing into one line. */
+#layer-drawer #map-stack-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+#layer-drawer #map-stack-chips .map-stack-chip { flex: 1 1 calc(50% - 6px); min-height: 40px; white-space: normal; font-size: 13px; }

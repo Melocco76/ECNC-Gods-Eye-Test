@@ -284,6 +284,7 @@ const COCKPIT_BRIEF_PAGES = [
 const LEFT_STACK_OBSTACLE_SELECTOR = [
   '#cockpit-hud .cockpit-topline',
   '#cockpit-hud .cockpit-topline > div',
+  '#app-header',
   '#title-bar',
   '#style-indicator',
   '#top-center-actions',
@@ -335,6 +336,7 @@ function isRenderedOnScreen(element) {
 const RIGHT_STACK_OBSTACLE_SELECTOR = [
   '#cockpit-hud .cockpit-topline',
   '#cockpit-hud .cockpit-topline > div',
+  '#app-header',
   '#title-bar',
   '#style-indicator',
   '#top-center-actions',
