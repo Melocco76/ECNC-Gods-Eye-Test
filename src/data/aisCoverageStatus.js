@@ -9,6 +9,7 @@
  * region is a status indicator, never a switch.
  */
 import { publicRegionCatalogue } from './aisRegions.js';
+import { sanitizeRegionIds } from './aisViewFilter.js';
 
 const CATALOGUE = publicRegionCatalogue();
 const LABELS = new Map(CATALOGUE.map((region) => [region.id, region.label]));
@@ -33,10 +34,12 @@ export const AIS_OWNER_CONTROL_NOTE = 'Coverage is set by the site owner';
  * @param {object|null|undefined} input GET /api/ais-regions body, or the
  *   `coverage` block of /api/ais-live: `{desired, subscribed, applying}`.
  * @returns {{kind: 'regions'|'fixed', label: string, items: {id: string, label: string, active: boolean}[],
- *   note: string, applying: boolean, writable: false}|null}
+ *   note: string, applying: boolean, writable: false, available: string[]|null}|null}
  */
 export function buildAisCoverageModel(input) {
   if (!input || typeof input !== 'object') return null;
+  // What viewers may choose from (server-reported); null when the server predates the field.
+  const available = Array.isArray(input.available) ? sanitizeRegionIds(input.available) : null;
   const desired = Array.isArray(input.desired) ? input.desired : [];
   const subscribed = Array.isArray(input.subscribed) ? input.subscribed : [];
   const regional = input.mode === 'regions' || (input.mode === undefined && (desired.length > 0 || subscribed.length > 0));
@@ -48,6 +51,7 @@ export function buildAisCoverageModel(input) {
       note: AIS_FIXED_COVERAGE_NOTE,
       applying: false,
       writable: false,
+      available,
     };
   }
   // What the socket was last told is what the user is looking at; before the
@@ -60,6 +64,7 @@ export function buildAisCoverageModel(input) {
     note: AIS_OWNER_CONTROL_NOTE,
     applying: Boolean(input.applying),
     writable: false,
+    available,
   };
 }
 

@@ -4,19 +4,39 @@
  * subscription, plus the pure logic that turns a chosen region set into one
  * combined subscription and coalesces rapid changes.
  *
- * Coverage is GLOBAL SERVER STATE (one AISStream socket per process), never
- * share-link or browser state. The browser can only name regions from the fixed
- * catalogue below; it can never supply coordinates.
+ * SERVER COVERAGE is global server state (one AISStream socket per process): a
+ * fixed, trusted configuration chosen by whoever runs the server. It is never
+ * share-link or browser state, and the browser can only ever name regions from
+ * the fixed catalogue below; it can never supply coordinates.
+ *
+ * VIEWER FILTERS are a different thing entirely: each browser chooses which of
+ * the regions the server already covers it wants to SEE (see aisViewFilter.js).
+ * They are local, never sent to the server, and never change coverage.
  *
  * Boxes use AISStream's order: `[[lat, lon], [lat, lon]]`.
  */
 
-/** First-rollout limits. */
+/**
+ * Limits for INTERACTIVE (admin-session / token) changes to the live server
+ * coverage. Kept small on purpose: a mistaken click must not widen the feed.
+ */
 export const AIS_REGION_LIMITS = Object.freeze({
   minRegions: 1,
   maxRegions: 2,
   /** Hard ceiling on boxes in one subscription (AISStream documents no limit). */
   maxBoxes: 12,
+});
+
+/**
+ * Limits for the TRUSTED server configuration (AISSTREAM_DEFAULT_REGIONS, set by
+ * whoever deploys the service): every catalogue region may be subscribed at once
+ * (all four = 11 boxes, under the 12-box ceiling). Only catalogue IDs are ever
+ * accepted - there is no way to configure arbitrary coordinates here.
+ */
+export const AIS_TRUSTED_LIMITS = Object.freeze({
+  minRegions: 1,
+  maxRegions: 4,
+  maxBoxes: AIS_REGION_LIMITS.maxBoxes,
 });
 
 /** Regions enabled when nothing else has been chosen. */
@@ -168,6 +188,69 @@ export function pointInRegions(ids, lat, lon) {
   return matcher ? matcher(lat, lon) : false;
 }
 
+const REGION_RECTS = AIS_REGION_CATALOGUE.map((region) => ({
+  id: region.id,
+  rects: region.boxes.map(([a, b]) => ({
+    south: Math.min(a[0], b[0]),
+    north: Math.max(a[0], b[0]),
+    west: Math.min(a[1], b[1]),
+    east: Math.max(a[1], b[1]),
+  })),
+}));
+
+/**
+ * Which catalogue regions contain a position, in canonical order. A point in an
+ * overlap (e.g. the Florida Straits) belongs to every region that contains it;
+ * a point outside every region gets an empty list. Independent of what the
+ * server currently subscribes to: it describes where the vessel IS.
+ * @param {number} lat
+ * @param {number} lon
+ * @returns {string[]}
+ */
+export function regionIdsForPoint(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return [];
+  const ids = [];
+  for (const { id, rects } of REGION_RECTS) {
+    for (const r of rects) {
+      if (lat >= r.south && lat <= r.north && lon >= r.west && lon <= r.east) {
+        ids.push(id);
+        break;
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * Catalogue regions that a raw list of legacy bounding boxes can deliver
+ * vessels for (any overlap counts). Used to tell viewers honestly which regions
+ * a legacy-configured server actually covers.
+ * @param {unknown} boxes `[[[lat, lon], [lat, lon]], ...]`
+ * @returns {string[]}
+ */
+export function regionsTouchedByBoxes(boxes) {
+  if (!Array.isArray(boxes)) return [];
+  const rects = [];
+  for (const box of boxes) {
+    if (!Array.isArray(box) || box.length !== 2) continue;
+    const [a, b] = box;
+    if (!Array.isArray(a) || !Array.isArray(b)) continue;
+    const values = [a[0], a[1], b[0], b[1]].map(Number);
+    if (!values.every(Number.isFinite)) continue;
+    rects.push({
+      south: Math.min(values[0], values[2]),
+      north: Math.max(values[0], values[2]),
+      west: Math.min(values[1], values[3]),
+      east: Math.max(values[1], values[3]),
+    });
+  }
+  return REGION_RECTS
+    .filter(({ rects: regionRects }) => regionRects.some((r) => rects.some((q) => (
+      r.south <= q.north && r.north >= q.south && r.west <= q.east && r.east >= q.west
+    ))))
+    .map(({ id }) => id);
+}
+
 /**
  * Parse a comma-separated default-region env value. Invalid input falls back to
  * the built-in default and reports why, so a typo cannot silently widen coverage.
@@ -179,7 +262,7 @@ export function parseDefaultRegionsEnv(raw) {
     return { regions: [...AIS_DEFAULT_REGIONS], warning: null };
   }
   const ids = String(raw).split(',').map((part) => part.trim()).filter(Boolean);
-  const result = normalizeRegionIds(ids);
+  const result = normalizeRegionIds(ids, AIS_TRUSTED_LIMITS);
   if (result.ok) return { regions: result.regions, warning: null };
   return {
     regions: [...AIS_DEFAULT_REGIONS],
@@ -225,7 +308,8 @@ export function createAisCoverageController(options) {
     minIntervalMs = AIS_COVERAGE_MIN_SEND_INTERVAL_MS,
   } = options;
 
-  const first = normalizeRegionIds(initial);
+  // The starting set comes from trusted server configuration, so it may be every catalogue region.
+  const first = normalizeRegionIds(initial, AIS_TRUSTED_LIMITS);
   let desired = first.ok ? first.regions : [...AIS_DEFAULT_REGIONS];
   let subscribed = [];
   let lastSubscribedAt = null;

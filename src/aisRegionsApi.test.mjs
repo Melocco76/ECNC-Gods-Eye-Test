@@ -98,7 +98,8 @@ test('without the flag the legacy AISSTREAM_BOUNDING_BOXES behaviour is untouche
   // No coverage guard in legacy mode: a New York fix is stored as before.
   ingestAisStreamEnvelope(position('111111111', ...NEW_YORK));
   assert.equal(aisStreamRows(10).length, 1);
-  assert.deepEqual(aisCoverageSummary(), { desired: [], subscribed: [], applying: false });
+  assert.deepEqual(aisCoverageSummary(), { desired: [], subscribed: [], applying: false, available: ['gulf'] },
+    'production legacy box overlaps only the Gulf region, so only Gulf is offered to viewers');
   const payload = aisRegionsStatusPayload();
   assert.equal(payload.mode, 'legacy-env');
   assert.deepEqual(payload.desired, []);
@@ -314,7 +315,7 @@ test('/api/ais-live keeps every existing field and only ADDS coverage', () => {
     assert.ok(block.includes(field), `/api/ais-live must still carry ${field}`);
   }
   assert.ok(block.includes('coverage: aisCoverageSummary(),'), 'the additive coverage block');
-  assert.deepEqual(Object.keys(aisCoverageSummary()).sort(), ['applying', 'desired', 'subscribed']);
+  assert.deepEqual(Object.keys(aisCoverageSummary()).sort(), ['applying', 'available', 'desired', 'subscribed']);
 });
 
 test('the browser layer never carries region-write credentials or names the regions endpoint (owner writes live in ownerCoverage.js)', () => {

@@ -2,7 +2,6 @@ import { groupIdForLayer, orderLayersForDrawer } from '../layerGroups.js';
 import { governorRequestRender } from '../renderGovernor.js';
 import { markDetectionSourcesChanged } from './detection.js';
 import { publicRegionCatalogue } from './aisRegions.js';
-import { OWNER_LEGACY_MESSAGE } from './ownerCoverage.js';
 function cloneLayerParams(value) {
   if (Array.isArray(value)) return value.map(cloneLayerParams);
   if (value && typeof value === 'object') {
@@ -2191,10 +2190,10 @@ export class DataLayerManager {
     const chips = controls?.chips || [];
     const legend = controls?.legend || [];
     container.hidden = chips.length === 0 && legend.length === 0
-      && !controls?.slider && !controls?.note && !controls?.coverage;
+      && !controls?.slider && !controls?.note && !controls?.coverage && !controls?.viewer;
     this._syncRowSlider(container, controls);
     this._syncRowCoverage(container, controls);
-    this._syncRowOwner(container, controls);
+    this._syncRowViewer(container, controls);
 
     for (const node of [...container.children]) {
       if (String(node.className).split(/\s+/).includes('data-toggle-legend-item')) node.remove();
@@ -2241,8 +2240,8 @@ export class DataLayerManager {
   /**
    * Optional READ-ONLY coverage summary (used by the AIS row): a label, one
    * status line per predefined region (or a single fixed-area note) and an "updating" marker while a
-   * change is in flight. It holds no inputs and no listeners (owner controls live in
-   * _syncRowOwner), so it is simply replaced when it changes.
+   * change is in flight. It holds no inputs and no listeners (the personal viewer filter is a
+   * separate block), so it is simply replaced when it changes.
    * @param {HTMLElement} container The row's `.data-toggle-controls` node.
    * @param {{coverage?: {label?: string, items: {id: string, label: string}[], applying?: boolean}}|null} controls
    */
@@ -2253,11 +2252,8 @@ export class DataLayerManager {
       existing?.remove();
       return;
     }
-    // Signed-in owner in regional mode: the switches (see _syncRowOwner) replace the read-only list.
-    const ownerView = controls?.owner?.view || null;
-    const switchesShown = Boolean(ownerView?.signedIn && ownerView?.regionalMode);
-    if (switchesShown) {
-      existing?.remove(); // the owner block carries its own "Coverage" heading
+    if (controls?.viewer) {
+      existing?.remove(); // the viewer filter carries its own "Coverage shown" block
       return;
     }
     const signature = JSON.stringify([coverage.kind, coverage.label, coverage.items, coverage.note, Boolean(coverage.applying)]);
@@ -2309,9 +2305,7 @@ export class DataLayerManager {
       note.textContent = coverage.note;
       node.appendChild(note);
     }
-    // Layout slot kept empty on purpose: the owner-only switches render in the
-    // sibling `.data-toggle-owner` block (see _syncRowOwner), and only after the
-    // server has confirmed an owner session.
+    // Layout slot kept empty on purpose (nothing is ever rendered into it).
     const slot = document.createElement('div');
     slot.className = 'data-toggle-coverage-slot';
     slot.dataset.regionControlsSlot = '';
@@ -2321,131 +2315,104 @@ export class DataLayerManager {
   }
 
   /**
-   * Owner-only region controls for the AIS row. Signed out (everyone by default):
-   * one quiet "Owner controls / Sign in" line. Signed in: four real checkboxes
-   * whose checked state is ALWAYS the server's reported desired set - a click
-   * never flips a box, it asks the server (via `controls.owner.actions`) and the
-   * box changes only when the server's own status says so. Legacy mode shows the
-   * boxes disabled with an explanation, and nothing is ever posted.
+   * PERSONAL viewer filter for the AIS row: four real checkboxes that choose which
+   * of the server-covered maritime regions THIS browser draws. They are local
+   * preferences - toggling one never reconnects the feed, posts anywhere or affects
+   * another visitor (the layer handles it; see aisViewFilter.js).
    *
-   * The block is replaced only when its plain-data view changes; the focused
-   * control is re-focused after a replace so keyboard use survives a refresh.
+   * The block is built once and then patched in place, so a keyboard user keeps
+   * focus while the counts refresh. A click never flips a box by itself: it is
+   * reverted and the layer's answer (via the next sync) decides the new state, so
+   * "at least one region stays on" and "not covered by this server" cannot be
+   * bypassed.
    * @param {HTMLElement} container The row's `.data-toggle-controls` node.
-   * @param {object|null} controls
+   * @param {{viewer?: {view: object, actions: object}}|null} controls
    */
-  _syncRowOwner(container, controls) {
-    const existing = [...container.children].find((node) => node.dataset?.controlKind === 'owner') || null;
-    const owner = controls?.owner || null;
-    const view = owner?.view || null;
-    if (!owner || !view || !controls?.coverage) {
+  _syncRowViewer(container, controls) {
+    const existing = [...container.children].find((node) => node.dataset?.controlKind === 'viewer') || null;
+    const viewer = controls?.viewer || null;
+    const view = viewer?.view || null;
+    if (!view) {
       existing?.remove();
       return;
     }
-    const catalogue = publicRegionCatalogue().map(({ id, label }) => ({ id, label }));
-    const signature = JSON.stringify([view, catalogue]);
-    if (existing && existing.dataset.signature === signature) return;
+    const catalogue = publicRegionCatalogue();
+    const available = new Set(view.available || []);
+    const selected = new Set(view.selected || []);
+    const onlyOne = selected.size <= 1;
+    const labelOf = new Map(catalogue.map(({ id, label }) => [id, label]));
 
-    const actions = owner.actions || {};
-    const focusables = new Map();
-    const remember = (key, element) => {
-      element.dataset.focusKey = key;
-      focusables.set(key, element);
-      element.addEventListener('focus', () => { this._ownerFocusKey = key; });
-    };
-    const node = document.createElement('div');
-    node.className = 'data-toggle-owner';
-    node.dataset.controlKind = 'owner';
-    node.dataset.signature = signature;
-
-    if (!view.signedIn) {
-      const label = document.createElement('span');
-      label.className = 'data-toggle-owner-label';
-      label.textContent = 'Owner controls';
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'data-toggle-owner-btn';
-      button.textContent = 'Sign in';
-      button.setAttribute('aria-label', 'Owner controls: sign in');
-      button.addEventListener('click', () => actions.signIn?.());
-      remember('signin', button);
-      node.append(label, button);
-    } else {
-      const busy = Boolean(view.busy || view.applying);
-      const group = document.createElement('div');
-      group.className = 'data-toggle-owner-regions';
-      group.setAttribute('role', 'group');
-      group.setAttribute('aria-label', 'Coverage regions');
+    let node = existing;
+    if (!node) {
+      node = document.createElement('div');
+      node.className = 'data-toggle-viewer';
+      node.dataset.controlKind = 'viewer';
+      const refs = { rows: new Map() };
       const heading = document.createElement('span');
-      heading.className = 'data-toggle-coverage-label';
-      heading.textContent = 'Coverage';
-      group.appendChild(heading);
-      const selected = new Set(view.selected || []);
-      const atMax = selected.size >= (view.maxRegions || 2);
+      heading.className = 'data-toggle-viewer-heading';
+      heading.textContent = 'Coverage shown';
+      const group = document.createElement('div');
+      group.className = 'data-toggle-viewer-regions';
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', 'Maritime regions to show on this device');
       for (const region of catalogue) {
         const row = document.createElement('label');
-        row.className = 'data-toggle-owner-region';
+        row.className = 'data-toggle-viewer-region';
         const input = document.createElement('input');
         input.type = 'checkbox';
-        input.className = 'data-toggle-owner-check';
-        input.dataset.regionId = String(region.id);
-        input.checked = selected.has(region.id);
-        // Off entirely in legacy mode, while a change is in flight, and for the
-        // regions that would exceed the maximum.
-        input.disabled = !view.regionalMode || busy || (atMax && !selected.has(region.id));
+        input.className = 'data-toggle-viewer-check';
+        input.dataset.regionId = region.id;
         input.addEventListener('change', () => {
           const wantOn = Boolean(input.checked);
-          input.checked = !wantOn; // the server, not the click, decides the new state
-          actions.toggle?.(region.id, wantOn);
+          input.checked = !wantOn; // the layer decides; the next sync shows the result
+          node._viewerActions?.toggle?.(region.id, wantOn);
         });
-        remember(`region:${region.id}`, input);
         const name = document.createElement('span');
-        name.className = 'data-toggle-owner-name';
+        name.className = 'data-toggle-viewer-name';
         name.textContent = region.label;
         const state = document.createElement('span');
-        state.className = 'data-toggle-owner-state';
-        state.textContent = selected.has(region.id) ? 'On' : 'Off';
+        state.className = 'data-toggle-viewer-state';
         row.append(input, name, state);
         group.appendChild(row);
+        refs.rows.set(region.id, { input, state });
       }
-      node.appendChild(group);
-      if (view.regionalMode) {
-        const hint = document.createElement('span');
-        hint.className = 'data-toggle-owner-hint';
-        hint.textContent = `Maximum ${view.maxRegions} regions`;
-        node.appendChild(hint);
-      } else {
-        const legacy = document.createElement('span');
-        legacy.className = 'data-toggle-owner-legacy';
-        legacy.textContent = OWNER_LEGACY_MESSAGE;
-        node.appendChild(legacy);
-      }
-      if (busy) {
-        const status = document.createElement('span');
-        status.className = 'data-toggle-owner-status';
-        status.setAttribute('role', 'status');
-        status.textContent = 'Updating coverage…';
-        node.appendChild(status);
-      }
-      if (view.error) {
-        const error = document.createElement('span');
-        error.className = 'data-toggle-owner-error';
-        error.setAttribute('role', 'alert');
-        error.textContent = view.error;
-        node.appendChild(error);
-      }
-      const out = document.createElement('button');
-      out.type = 'button';
-      out.className = 'data-toggle-owner-btn';
-      out.textContent = 'Sign out';
-      out.addEventListener('click', () => actions.signOut?.());
-      remember('signout', out);
-      node.appendChild(out);
+      const count = document.createElement('span');
+      count.className = 'data-toggle-viewer-count';
+      const note = document.createElement('span');
+      note.className = 'data-toggle-viewer-note';
+      node.append(heading, group, count, note);
+      refs.count = count;
+      refs.note = note;
+      node._viewerRefs = refs;
+      container.appendChild(node);
     }
+    // `actions` is captured by the change handlers above at creation; keep it current.
+    node._viewerActions = viewer.actions;
 
-    if (existing) existing.replaceWith(node);
-    else container.appendChild(node);
-    const again = this._ownerFocusKey ? focusables.get(this._ownerFocusKey) : null;
-    if (again && !again.disabled && typeof again.focus === 'function') again.focus();
+    const refs = node._viewerRefs;
+    for (const region of catalogue) {
+      const { input, state } = refs.rows.get(region.id);
+      const isAvailable = available.has(region.id);
+      const isOn = isAvailable && selected.has(region.id);
+      input.checked = isOn;
+      // Not covered by this server -> cannot be chosen. The single remaining
+      // region cannot be switched off (there must always be something to see).
+      input.disabled = !isAvailable || (isOn && onlyOne);
+      input.title = !isAvailable
+        ? 'This server does not cover this region'
+        : (isOn && onlyOne ? 'At least one region stays on' : '');
+      state.textContent = !isAvailable ? 'Not covered' : (isOn ? 'Shown' : 'Hidden');
+    }
+    const received = Number(view.received) || 0;
+    const shown = Number(view.shown) || 0;
+    const fmt = (n) => Number(n).toLocaleString('en-US'); // exact counts, e.g. 2,842
+    refs.count.textContent = shown === received
+      ? `${fmt(shown)} shown`
+      : `${fmt(shown)} shown · ${fmt(received)} received`;
+    const names = [...available].map((id) => labelOf.get(id)).filter(Boolean);
+    refs.note.textContent = available.size < catalogue.length
+      ? `Coverage available from server: ${names.join(', ') || 'none'}`
+      : 'Your choice is saved on this device only';
   }
 
   /**

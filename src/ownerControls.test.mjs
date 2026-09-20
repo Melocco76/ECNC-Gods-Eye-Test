@@ -1,12 +1,12 @@
-// Browser side of the owner-only AIS region controls: the owner state machine, the
-// row rendering (public / legacy / signed-in), the sign-in dialog, and the source-level
-// guarantees (no credential storage, no URL credential, cookie-only browser flow).
+// RETAINED owner-session client code (ownerCoverage.js + ownerSignInDialog.js). The app no
+// longer wires it into the Vessels row - regional coverage is now a personal viewer filter -
+// but the modules stay, tested, for future maintenance. Covers the owner state machine, the
+// sign-in dialog, and the source-level guarantees (no credential storage, no URL credential,
+// cookie-only browser flow).
 // A tiny fake DOM keeps this dependency-free; nothing here touches a network.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { DataLayerManager } from './data/manager.js';
-import { buildAisCoverageModel } from './data/aisCoverageStatus.js';
 import { createOwnerCoverage, planRegionChange, OWNER_LEGACY_MESSAGE, OWNER_SESSION_URL, OWNER_REGIONS_URL } from './data/ownerCoverage.js';
 import { openOwnerSignInDialog } from './ownerSignInDialog.js';
 
@@ -228,136 +228,11 @@ test('live coverage updates move the applying flag without another request', asy
   assert.equal(server.calls.length, before);
 });
 
-// -- row rendering ----------------------------------------------------------------------------------
-
-function renderRow({ coverage, owner, mgr = new DataLayerManager({}), container }) {
-  const doc = globalThis.document;
-  const box = container || doc.createElement('div');
-  const controls = { coverage, owner };
-  mgr._syncRowCoverage(box, controls);
-  mgr._syncRowOwner(box, controls);
-  return { box, mgr };
-}
-
 function withDom(fn) {
   const saved = globalThis.document;
   globalThis.document = makeDom();
   return Promise.resolve(fn(globalThis.document)).finally(() => { globalThis.document = saved; });
 }
-
-const FIXED = () => buildAisCoverageModel({ mode: 'legacy-env', desired: [], subscribed: [] });
-const REGIONAL = (desired = ['gulf'], applying = false) => buildAisCoverageModel({ mode: 'regions', desired, subscribed: desired, applying });
-const view = (over = {}) => ({ signedIn: false, regionalMode: false, busy: false, error: null, applying: false, selected: [], minRegions: 1, maxRegions: 2, ...over });
-const noopActions = () => ({ signIn() {}, signOut() {}, toggle() {} });
-
-test('public view: fixed area, a quiet Owner controls / Sign in, and no region control', () => withDom(() => {
-  const { box } = renderRow({ coverage: FIXED(), owner: { view: view(), actions: noopActions() } });
-  assert.match(text(box), /Coverage Fixed area: northern Gulf of Mexico/);
-  assert.match(text(box), /Owner controls Sign in/);
-  assert.equal(all(box, (n) => n.tag === 'input').length, 0, 'no checkbox or input for the public');
-  const buttons = all(box, (n) => n.tag === 'button');
-  assert.deepEqual(buttons.map((b) => b.textContent), ['Sign in']);
-  assert.equal(buttons[0].getAttribute('aria-label'), 'Owner controls: sign in');
-}));
-
-test('public regional view stays a read-only list plus the sign-in line', () => withDom(() => {
-  const { box } = renderRow({ coverage: REGIONAL(['gulf', 'east-coast']), owner: { view: view({ regionalMode: true }), actions: noopActions() } });
-  assert.equal(all(box, (n) => n.tag === 'input').length, 0);
-  assert.match(text(box), /\[x\] Gulf of Mexico On/);
-  assert.match(text(box), /\[ \] U\.S\. West Coast Off/);
-  assert.match(text(box), /Coverage is set by the site owner/);
-}));
-
-test('clicking Sign in asks for the dialog; the row itself holds no token field', () => withDom(() => {
-  let opened = 0;
-  const { box } = renderRow({ coverage: FIXED(), owner: { view: view(), actions: { ...noopActions(), signIn: () => { opened += 1; } } } });
-  all(box, (n) => n.tag === 'button')[0].click();
-  assert.equal(opened, 1);
-  assert.equal(all(box, (n) => n.type === 'password').length, 0);
-}));
-
-test('signed in, legacy mode: disabled switches and the plain explanation', () => withDom(() => {
-  const { box } = renderRow({ coverage: FIXED(), owner: { view: view({ signedIn: true }), actions: noopActions() } });
-  const checks = all(box, (n) => n.tag === 'input');
-  assert.equal(checks.length, 4);
-  assert.ok(checks.every((c) => c.type === 'checkbox' && c.disabled && !c.checked), 'all disabled, none pretending to be on');
-  assert.match(text(box), /Regional coverage controls are not enabled on this server\./);
-  assert.match(text(box), /Sign out/);
-}));
-
-test('signed in, regional mode: four real checkboxes driven by the server state', () => withDom(() => {
-  const { box } = renderRow({ coverage: REGIONAL(['gulf']), owner: { view: view({ signedIn: true, regionalMode: true, selected: ['gulf'] }), actions: noopActions() } });
-  const checks = all(box, (n) => n.tag === 'input');
-  assert.deepEqual(checks.map((c) => c.dataset.regionId), ['gulf', 'east-coast', 'west-coast', 'great-lakes']);
-  assert.deepEqual(checks.map((c) => c.checked), [true, false, false, false]);
-  assert.ok(checks.every((c) => c.type === 'checkbox' && !c.disabled));
-  assert.match(text(box), /Maximum 2 regions/);
-  assert.match(text(box), /Gulf of Mexico On/);
-  assert.match(text(box), /U\.S\. East Coast Off/);
-  assert.equal(byClass(box, 'data-toggle-coverage-list').length, 0, 'the read-only list is replaced by the switches');
-  assert.equal(byClass(box, 'data-toggle-coverage').length, 0, 'the read-only coverage node steps aside, so the heading appears once');
-  assert.equal((text(box).match(/Coverage/g) || []).length, 1);
-  assert.equal(all(box, (n) => n.tag === 'button').map((b) => b.textContent).join(), 'Sign out');
-}));
-
-test('at the maximum the remaining switches are disabled; at the minimum the last one still asks (and is refused)', () => withDom(() => {
-  const two = renderRow({ coverage: REGIONAL(['gulf', 'east-coast']), owner: { view: view({ signedIn: true, regionalMode: true, selected: ['gulf', 'east-coast'] }), actions: noopActions() } });
-  const checks = all(two.box, (n) => n.tag === 'input');
-  assert.deepEqual(checks.map((c) => c.disabled), [false, false, true, true]);
-}));
-
-test('a click never flips a box: it is reverted and the server is asked instead', () => withDom(() => {
-  const asked = [];
-  const { box } = renderRow({ coverage: REGIONAL(['gulf']), owner: { view: view({ signedIn: true, regionalMode: true, selected: ['gulf'] }), actions: { ...noopActions(), toggle: (id, on) => asked.push([id, on]) } } });
-  const east = all(box, (n) => n.tag === 'input')[1];
-  east.checked = true; // what the browser does on click
-  east.change();
-  assert.equal(east.checked, false, 'reverted until the server confirms');
-  assert.deepEqual(asked, [['east-coast', true]]);
-}));
-
-test('while a change applies the switches are disabled and Updating coverage… is announced', () => withDom(() => {
-  for (const flags of [{ busy: true }, { applying: true }]) {
-    const { box } = renderRow({ coverage: REGIONAL(['gulf']), owner: { view: view({ signedIn: true, regionalMode: true, selected: ['gulf'], ...flags }), actions: noopActions() } });
-    assert.ok(all(box, (n) => n.tag === 'input').every((c) => c.disabled));
-    const status = byClass(box, 'data-toggle-owner-status')[0];
-    assert.equal(status.textContent, 'Updating coverage…');
-    assert.equal(status.getAttribute('role'), 'status');
-  }
-}));
-
-test('an error is announced as an alert', () => withDom(() => {
-  const { box } = renderRow({ coverage: REGIONAL(['gulf']), owner: { view: view({ signedIn: true, regionalMode: true, selected: ['gulf'], error: 'Coverage update failed. Nothing was changed.' }), actions: noopActions() } });
-  const alert = byClass(box, 'data-toggle-owner-error')[0];
-  assert.equal(alert.getAttribute('role'), 'alert');
-  assert.match(alert.textContent, /Nothing was changed/);
-}));
-
-test('sign out calls the action, and re-rendering returns to the public view', () => withDom(() => {
-  let outs = 0;
-  const mgr = new DataLayerManager({});
-  const box = globalThis.document.createElement('div');
-  renderRow({ mgr, container: box, coverage: REGIONAL(['gulf']), owner: { view: view({ signedIn: true, regionalMode: true, selected: ['gulf'] }), actions: { ...noopActions(), signOut: () => { outs += 1; } } } });
-  all(box, (n) => n.tag === 'button' && n.textContent === 'Sign out')[0].click();
-  assert.equal(outs, 1);
-  renderRow({ mgr, container: box, coverage: REGIONAL(['gulf']), owner: { view: view({ regionalMode: true }), actions: noopActions() } });
-  assert.equal(all(box, (n) => n.tag === 'input').length, 0, 'no write controls once signed out');
-  assert.match(text(box), /Owner controls Sign in/);
-}));
-
-test('an unchanged view is not re-rendered, and the focused switch keeps focus across a refresh', () => withDom((doc) => {
-  const mgr = new DataLayerManager({});
-  const box = doc.createElement('div');
-  const first = { view: view({ signedIn: true, regionalMode: true, selected: ['gulf'] }), actions: noopActions() };
-  renderRow({ mgr, container: box, coverage: REGIONAL(['gulf']), owner: first });
-  const node = byClass(box, 'data-toggle-owner')[0];
-  renderRow({ mgr, container: box, coverage: REGIONAL(['gulf']), owner: { ...first, view: { ...first.view } } });
-  assert.equal(byClass(box, 'data-toggle-owner')[0], node, 'identical view: same node');
-  const east = all(box, (n) => n.tag === 'input')[1];
-  east.focus();
-  renderRow({ mgr, container: box, coverage: REGIONAL(['gulf', 'east-coast']), owner: { view: view({ signedIn: true, regionalMode: true, selected: ['gulf', 'east-coast'] }), actions: noopActions() } });
-  assert.equal(doc.activeElement.dataset.regionId, 'east-coast', 'focus restored after the server-confirmed change');
-}));
 
 // -- sign-in dialog -------------------------------------------------------------------------------------
 
@@ -440,29 +315,29 @@ test('the browser only ever POSTs region ids, from one place, with the cookie', 
   }
 });
 
-test('the Sign in entry is a plain button in the Vessels row, not part of the static page', () => {
+test('the owner sign-in code is retained but NOT wired into the app or the Vessels row', () => {
   const html = read('../index.html');
   assert.equal(/owner-signin|Owner controls|owner-dialog/i.test(html), false);
-  assert.match(read('./data/aisLiveVessels.js'), /openOwnerSignInDialog\(\{ submit: \(token\) => _owner\.signIn\(token\)/);
+  // Nothing the app actually loads imports the owner modules.
+  for (const file of ['./data/manager.js', './data/aisLiveVessels.js', './layerDrawer.js', './ui.js', './main.js', './data/aisCoverageStatus.js', './data/aisViewFilter.js']) {
+    assert.equal(/ownerCoverage|ownerSignInDialog/.test(code(file)), false, `${file} must not import the owner modules`);
+  }
+  const manager = code('./data/manager.js');
+  assert.equal(/Owner controls|Sign in|owner-signin|OWNER_/.test(manager), false, 'no owner UI in the row renderer');
 });
 
 // -- mobile / layout ---------------------------------------------------------------------------------
 
-const phone = css.slice(css.lastIndexOf('/* ══ Owner controls'));
+const phone = css.slice(css.lastIndexOf('/* ══ AIS viewer filter'));
 
-test('mobile: 44px targets, 16px password field, dialog fits and never spans the credit', () => {
-  assert.match(phone, /@media \(max-width: 767px\) \{[\s\S]*\.data-toggle-owner-btn \{ min-height: 44px;/);
-  assert.match(phone, /\.data-toggle-owner-region \{ min-height: 44px; \}/);
+test('the retained dialog styles stay mobile-safe (44px, 16px field, top-anchored, no backdrop)', () => {
   assert.match(phone, /\.owner-dialog-input \{ min-height: 44px; font-size: 16px; \}/);
   assert.match(phone, /\.owner-dialog-btn \{ min-height: 44px; \}/);
   assert.match(phone, /width: min\(340px, calc\(100vw - 32px\)\)/, 'fits 320px with a 16px gutter');
-  assert.ok(320 - 32 >= 288 && 288 <= 340);
   const dialog = /\.owner-dialog \{([^}]*)\}/.exec(phone)[1];
   assert.match(dialog, /position: fixed; top: 72px;/, 'anchored to the top');
   assert.equal(/bottom\s*:/.test(dialog), false, 'never anchored to the bottom where the credit is');
-  assert.match(dialog, /max-height: calc\(100vh - 160px\)/, 'leaves the bottom band free');
   assert.equal(/inset\s*:\s*0|width:\s*100vw|height:\s*100vh/.test(phone), false, 'no full-screen backdrop');
-  assert.match(phone, /forced-colors: active[\s\S]*Canvas/, 'high-contrast keeps system colours');
 });
 
 test('the owner block adds no rule that could disturb the pinned coverage/credit rules', () => {

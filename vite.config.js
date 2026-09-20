@@ -68,9 +68,12 @@ import {
 } from './scripts/adminSession.mjs';
 import {
   AIS_REGION_LIMITS,
+  AIS_TRUSTED_LIMITS,
   boxesForRegions,
   createAisCoverageController,
   parseDefaultRegionsEnv,
+  regionIdsForPoint,
+  regionsTouchedByBoxes,
   publicRegionCatalogue,
 } from './src/data/aisRegions.js';
 import { keylessHudSummaryResponse } from './src/hudSummaryResponse.js';
@@ -5143,9 +5146,27 @@ function aisMessageRatePerSec(now = Date.now()) {
 
 /** The additive `coverage` block on /api/ais-live. */
 export function aisCoverageSummary() {
-  if (!aisRegionsEnabled()) return { desired: [], subscribed: [], applying: false };
+  const available = aisAvailableRegions();
+  if (!aisRegionsEnabled()) return { desired: [], subscribed: [], applying: false, available };
   const { desired, subscribed, applying } = aisCoverageController().snapshot();
-  return { desired, subscribed, applying };
+  return { desired, subscribed, applying, available };
+}
+
+/**
+ * The catalogue regions this server can deliver vessels for right now - what a
+ * viewer may choose from. Regional mode: what the socket was last told (the
+ * desired set until the first subscription lands). Legacy mode: the regions the
+ * configured bounding boxes overlap (production's single Gulf box gives just
+ * `gulf`). Purely informational: viewers filter what they SEE among these, and
+ * nothing a viewer does can change it.
+ * @returns {string[]}
+ */
+export function aisAvailableRegions() {
+  if (aisRegionsEnabled()) {
+    const { desired, subscribed } = aisCoverageController().snapshot();
+    return subscribed.length ? subscribed : desired;
+  }
+  return regionsTouchedByBoxes(parseJsonEnv('AISSTREAM_BOUNDING_BOXES', AISSTREAM_DEFAULT_BBOXES));
 }
 
 /** Public, read-only GET /api/ais-regions body. No key, no environment data. */
@@ -5160,8 +5181,10 @@ export function aisRegionsStatusPayload() {
     subscribed: coverage?.subscribed ?? [],
     applying: coverage?.applying ?? false,
     lastSubscribedAt: coverage?.lastSubscribedAt ?? null,
+    available: aisAvailableRegions(),
     minRegions: AIS_REGION_LIMITS.minRegions,
     maxRegions: AIS_REGION_LIMITS.maxRegions,
+    trustedMaxRegions: AIS_TRUSTED_LIMITS.maxRegions,
     maxBoxes: AIS_REGION_LIMITS.maxBoxes,
     boxCount: coverage ? boxesForRegions(coverage.subscribed).length : 0,
     writeEnabled: enabled && Boolean(process.env.AIS_REGIONS_ADMIN_TOKEN),
@@ -7284,6 +7307,9 @@ export function ingestAisStreamEnvelope(envelope) {
     speed: numberValue(message.Sog ?? message.SOG),
     course: numberValue(message.Cog ?? message.COG),
     heading: normalizedHeading(message.TrueHeading ?? message.Heading),
+    // Additive: which catalogue regions this position falls in (empty when none),
+    // so a viewer can filter what it draws. One row per MMSI regardless.
+    regionIds: regionIdsForPoint(lat, lon),
     last_position_UTC: normalizeAisTimestamp(metadata.time_utc ?? metadata.TimeUtc),
     // Use the AIS message's own report time, not server ingest wall-clock —
     // trail spacing and dead reckoning depend on true fix epochs.

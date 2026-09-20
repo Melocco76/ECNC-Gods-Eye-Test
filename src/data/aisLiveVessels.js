@@ -45,8 +45,13 @@ import {
 } from './focusDeemphasis.js';
 import { requestWorldFocus } from '../worldFocus.js';
 import { buildAisCoverageModel, fetchAisRegionsStatus } from './aisCoverageStatus.js';
-import { createOwnerCoverage } from './ownerCoverage.js';
-import { openOwnerSignInDialog } from '../ownerSignInDialog.js';
+import {
+  effectiveViewRegions,
+  loadViewRegions,
+  planViewChange,
+  saveViewRegions,
+  vesselPassesViewFilter,
+} from './aisViewFilter.js';
 import { holdContinuousRender, releaseContinuousRender } from '../renderGovernor.js';
 
 const FOCUS_EVIDENCE_DEV = import.meta.env?.DEV === true;
@@ -346,24 +351,92 @@ function setCoverageModel(model) {
   const next = model ? JSON.stringify(model) : null;
   const prev = _coverageModel ? JSON.stringify(_coverageModel) : null;
   _coverageModel = model;
-  if (next !== prev) {
-    try { _rowControlsListener?.(); } catch { /* a listener must never break the poll */ }
-  }
+  syncViewAvailability(model);
+  if (next !== prev) notifyRowControls();
 }
 
 /**
- * Owner-only region controls. The row shows them only after the server confirms an
- * owner session (HttpOnly cookie); public visitors see the read-only coverage.
+ * PERSONAL VIEWER FILTER (see aisViewFilter.js). Which of the regions the server
+ * covers THIS browser draws. Purely local: choosing regions never reconnects
+ * AISStream, never posts anywhere and never changes what another visitor sees.
+ * `available` is what the server reports it covers (null = unknown / older
+ * server, in which case nothing is filtered).
  */
-const _owner = createOwnerCoverage({ onChange: () => { try { _rowControlsListener?.(); } catch { /* never break the poll */ } } });
-const _ownerActions = {
-  signIn() {
-    const opener = globalThis.document?.activeElement || null;
-    openOwnerSignInDialog({ submit: (token) => _owner.signIn(token), opener });
-  },
-  signOut: () => _owner.signOut(),
-  toggle: (id, wantOn) => _owner.toggle(id, wantOn),
-};
+const _view = { saved: null, available: null, storage: undefined };
+
+function viewSavedRegions() {
+  if (_view.saved === null) _view.saved = loadViewRegions(_view.storage);
+  return _view.saved;
+}
+
+function currentViewSet() {
+  if (!_view.available) return null;
+  return new Set(effectiveViewRegions(viewSavedRegions(), _view.available));
+}
+
+function recordPassesViewFilter(record) {
+  return vesselPassesViewFilter(record?.regionIds, state.viewSet);
+}
+
+function notifyRowControls() {
+  try { _rowControlsListener?.(); } catch { /* a listener must never break the poll */ }
+}
+
+/**
+ * Re-derive which cached vessels are drawn. Hidden vessels stay in the cache
+ * (their positions keep updating), so showing a region again is instant.
+ */
+function applyViewFilter() {
+  state.viewSet = currentViewSet();
+  const cached = [...state.vesselMap.values(), ...state.unkeyedRecords];
+  for (const record of cached) {
+    if (!recordPassesViewFilter(record) && record.billboard) record.billboard.show = false;
+  }
+  rebuildVisibleRecords();
+  if (state.selectedRecord && !recordPassesViewFilter(state.selectedRecord)) clearVesselInspection();
+  state.lastVisibilityUpdate = 0;
+  updateVisibility(true);
+  notifyRowControls();
+}
+
+/** `state.vesselRecords` is the DRAWN list: every cached vessel that passes the filter. */
+function rebuildVisibleRecords() {
+  const cached = [...state.vesselMap.values(), ...state.unkeyedRecords];
+  state.vesselRecords = cached.filter(recordPassesViewFilter);
+  state.receivedCount = cached.length;
+  state.count = state.vesselRecords.length;
+}
+
+function syncViewAvailability(model) {
+  const next = Array.isArray(model?.available) ? model.available : null;
+  if (JSON.stringify(next) === JSON.stringify(_view.available)) return;
+  _view.available = next;
+  applyViewFilter();
+}
+
+function toggleViewRegion(id, wantOn) {
+  const plan = planViewChange(viewSavedRegions(), id, wantOn, _view.available || []);
+  if (!plan.ok) {
+    notifyRowControls();
+    return false;
+  }
+  _view.saved = plan.saved;
+  saveViewRegions(plan.saved, _view.storage);
+  applyViewFilter();
+  return true;
+}
+
+/** Plain-data description of the viewer filter for the row renderer (null = no filter UI). */
+function viewerRowModel() {
+  if (!_view.available) return null;
+  return {
+    available: [..._view.available],
+    selected: [...(state.viewSet || [])],
+    shown: state.vesselRecords.length,
+    received: state.receivedCount,
+    fixedArea: _coverageModel?.kind === 'fixed',
+  };
+}
 
 /** One GET when the layer turns on; live updates then ride the /api/ais-live coverage block. */
 async function loadRegionalCoverageStatus() {
@@ -390,7 +463,11 @@ const aisLiveVesselsLayer = {
 
   /** Row descriptor for the data-layer panel: read-only regional coverage. */
   getRowControls() {
-    return _coverageModel ? { coverage: _coverageModel, owner: { view: _owner.view(), actions: _ownerActions } } : null;
+    if (!_coverageModel) return null;
+    const viewer = viewerRowModel();
+    return viewer
+      ? { coverage: _coverageModel, viewer: { view: viewer, actions: { toggle: toggleViewRegion } } }
+      : { coverage: _coverageModel };
   },
 
   setRowControlsListener(listener) {
@@ -403,7 +480,6 @@ const aisLiveVesselsLayer = {
     if (!wasEnabled) {
       beginAisSession();
       void loadRegionalCoverageStatus();
-      void _owner.refreshSession();
     }
     holdContinuousRender('ais-vessels'); // per-frame animator (perf wave 2)
     const activeViewer = viewer || state.viewer;
@@ -487,6 +563,7 @@ const aisLiveVesselsLayer = {
     let record = null;
     if (/^\d+$/.test(q)) {
       record = state.vesselMap.get(q) || null;
+      if (record && !recordPassesViewFilter(record)) record = null; // hidden regions are not searchable
     }
     if (!record) {
       const lower = q.toLowerCase();
@@ -609,7 +686,7 @@ const aisLiveVesselsLayer = {
     const target = String(mmsi).trim();
     if (!target) return false;
     const record = state.vesselMap.get(target);
-    if (!record) return false;
+    if (!record || !recordPassesViewFilter(record)) return false; // hidden regions cannot be selected
     selectVessel(record);
     return true;
   },
@@ -696,6 +773,7 @@ const aisLiveVesselsLayer = {
     const waitingForFirstPosition = state.firstConnectPhase === 'loading';
     return {
       count: state.count,
+      receivedCount: state.receivedCount,
       lastUpdate: state.lastUpdate,
       loading: state.loading || waitingForFirstPosition,
       loadingLabel: waitingForFirstPosition
@@ -726,6 +804,10 @@ const state = {
   loadingLabel: '',
   lastUpdate: null,
   count: 0,
+  /** Cached vessels before the viewer filter (count is what is drawn). */
+  receivedCount: 0,
+  /** Effective viewer regions as a Set, or null when nothing is filtered. */
+  viewSet: null,
   newestPositionAt: null,
   transportStatus: null,
   /** Server epoch-ms of the next reconnect attempt while the feed is degraded. */
@@ -949,7 +1031,6 @@ function applyAisFeedSnapshot(viewer, payload) {
   // Additive `coverage` block; absent on older servers, empty in legacy mode.
   if (payload && typeof payload === 'object' && 'coverage' in payload) {
     setCoverageModel(buildAisCoverageModel(payload.coverage));
-    _owner.noteLiveCoverage(payload.coverage);
   }
   const snapshot = classifyAisFeedSnapshot(payload);
   state.loaded = true;
@@ -1090,7 +1171,7 @@ function reconcileVessels(viewer, rows) {
     if (state.trailMmsi === mmsi) clearSelectedVesselTrail();
   }
 
-  state.vesselRecords = [...state.vesselMap.values(), ...state.unkeyedRecords];
+  rebuildVisibleRecords();
   state.lastVisibilityUpdate = 0;
   updateVisibility(true);
 }
@@ -1103,7 +1184,7 @@ function reconcileVessels(viewer, rows) {
  * @param {Cesium.EllipsoidalOccluder|null} occluder - Horizon occluder for initial visibility.
  */
 function addRecordPrimitives(record, occluder) {
-  const visible = state.enabled && isVisible(record.surfacePosition, occluder);
+  const visible = state.enabled && recordPassesViewFilter(record) && isVisible(record.surfacePosition, occluder);
   record.billboard = state.billboardCollection.add({
     position: record.position,
     show: visible,
@@ -1144,6 +1225,7 @@ function updateRecordInPlace(record, next) {
   record.speed = next.speed;
   record.course = next.course;
   record.heading = next.heading;
+  record.regionIds = next.regionIds;
   record.lastPositionUtc = next.lastPositionUtc;
   record.lastPositionEpoch = next.lastPositionEpoch;
   record.position = next.position;
@@ -1205,6 +1287,8 @@ function normalizeVessel(row) {
     speed: finiteNumber(row.speed),
     course: finiteNumber(row.course),
     heading: finiteNumber(row.heading),
+    // Additive server field: catalogue regions containing this position.
+    regionIds: Array.isArray(row.regionIds) ? row.regionIds.filter((id) => typeof id === 'string') : [],
     lastPositionUtc: String(row.last_position_UTC || ''),
     lastPositionEpoch: finiteNumber(row.last_position_epoch),
     position,
@@ -1994,6 +2078,8 @@ function resetState() {
   state.loadingLabel = '';
   state.lastUpdate = null;
   state.count = 0;
+  state.receivedCount = 0;
+  state.viewSet = currentViewSet();
   state.newestPositionAt = null;
   state.transportStatus = null;
   state.nextAttemptAt = null;
@@ -2045,6 +2131,29 @@ export function _bindVesselInteractionForTest(viewer, handler, keyTarget) {
  * @param {Object} [options={}] - Test state values.
  * @returns {void}
  */
+/** Test seam: forget the viewer filter and point it at a fake storage (null = none). */
+export function _resetViewFilterForTest({ storage = null, available = null } = {}) {
+  _view.saved = null;
+  _view.available = available;
+  _view.storage = storage;
+  state.viewSet = currentViewSet();
+}
+
+/** Test seam: the pieces of the viewer filter a test may assert on. */
+export function _getViewFilterForTest() {
+  return { saved: viewSavedRegions(), available: _view.available, selected: [...(state.viewSet || [])], shown: state.vesselRecords.length, received: state.receivedCount };
+}
+
+/** Test seam: apply a viewer checkbox click exactly as the row does. */
+export function _toggleViewRegionForTest(id, wantOn) {
+  return toggleViewRegion(id, wantOn);
+}
+
+/** Test seam: the row descriptor the manager renders. */
+export function _viewerRowModelForTest() {
+  return viewerRowModel();
+}
+
 export function _setVesselStateForTest(options = {}) {
   resetState();
   const records = Array.isArray(options.records) ? options.records : [];
@@ -2057,6 +2166,7 @@ export function _setVesselStateForTest(options = {}) {
   state.lastUpdate = options.lastUpdate ?? null;
   state.vesselRecords = records;
   state.count = records.length;
+  state.receivedCount = records.length;
   state.vesselMap = new Map(
     records.filter((record) => record?.mmsi).map((record) => [record.mmsi, record])
   );

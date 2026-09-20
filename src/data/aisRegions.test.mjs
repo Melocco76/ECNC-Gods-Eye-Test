@@ -118,10 +118,15 @@ test('the coverage matcher accepts points inside enabled boxes only', () => {
 test('default-region env parsing falls back safely and says why', () => {
   assert.deepEqual(parseDefaultRegionsEnv(undefined), { regions: ['gulf'], warning: null });
   assert.deepEqual(parseDefaultRegionsEnv(' east-coast , gulf '), { regions: ['gulf', 'east-coast'], warning: null });
-  const bad = parseDefaultRegionsEnv('gulf,east-coast,west-coast');
+  // The TRUSTED server configuration may name every catalogue region (11 boxes).
+  assert.deepEqual(parseDefaultRegionsEnv('gulf,east-coast,west-coast'), { regions: ['gulf', 'east-coast', 'west-coast'], warning: null });
+  assert.deepEqual(parseDefaultRegionsEnv('great-lakes, west-coast, east-coast, gulf'),
+    { regions: ['gulf', 'east-coast', 'west-coast', 'great-lakes'], warning: null });
+  const bad = parseDefaultRegionsEnv('gulf,atlantis');
   assert.deepEqual(bad.regions, ['gulf']);
   assert.match(bad.warning, /Ignoring AISSTREAM_DEFAULT_REGIONS/);
   assert.deepEqual(parseDefaultRegionsEnv('atlantis').regions, ['gulf']);
+  assert.deepEqual(parseDefaultRegionsEnv('gulf,gulf,gulf').regions, ['gulf'], 'duplicates collapse');
 });
 
 // -- coalescing controller ----------------------------------------------------
