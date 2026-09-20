@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { promises as fsp } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -58,6 +58,13 @@ import {
 import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
+import {
+  AIS_REGION_LIMITS,
+  boxesForRegions,
+  createAisCoverageController,
+  parseDefaultRegionsEnv,
+  publicRegionCatalogue,
+} from './src/data/aisRegions.js';
 import { keylessHudSummaryResponse } from './src/hudSummaryResponse.js';
 import { parseEnv as parseDotenvText } from 'node:util';
 import { readEnvironmentSource as readPinokioEnvironmentSource } from './scripts/pinokio-environment.mjs';
@@ -1400,6 +1407,18 @@ let _aisStreamTickTimer = null;
 let _aisNeedsRearm = false;
 /** @type {Function|null|undefined} `ws` constructor; null = unavailable, undefined = not yet probed. */
 let _aisWebSocketImpl;
+/**
+ * Regional coverage controller (src/data/aisRegions.js); built lazily so .env is
+ * loaded first. Only consulted when AISSTREAM_REGIONS_ENABLED=1 - otherwise the
+ * legacy AISSTREAM_BOUNDING_BOXES behaviour is untouched.
+ * @type {ReturnType<typeof createAisCoverageController>|null}
+ */
+let _aisCoverage = null;
+/** Accepted AIS records, and position records dropped by the coverage guard. */
+let _aisMessageCount = 0;
+let _aisOutOfCoverageDropped = 0;
+/** Cheap message-rate sample: refreshed at most every 10 s, only when asked. */
+let _aisRateSample = { at: 0, count: 0, perSec: null };
 /** @type {Map<string,object>} */
 const _aisStreamVessels = new Map();
 /**
@@ -5099,6 +5118,144 @@ function adsbLolProxy() {
   };
 }
 
+/** Cheap rate: two counter reads at least 10 s apart; no cache scan. */
+function aisMessageRatePerSec(now = Date.now()) {
+  const sample = _aisRateSample;
+  if (!sample.at) {
+    _aisRateSample = { at: now, count: _aisMessageCount, perSec: null };
+    return null;
+  }
+  if (now - sample.at >= 10_000) {
+    const perSec = Number(((_aisMessageCount - sample.count) / ((now - sample.at) / 1000)).toFixed(2));
+    _aisRateSample = { at: now, count: _aisMessageCount, perSec };
+    return perSec;
+  }
+  return sample.perSec;
+}
+
+/** The additive `coverage` block on /api/ais-live. */
+export function aisCoverageSummary() {
+  if (!aisRegionsEnabled()) return { desired: [], subscribed: [], applying: false };
+  const { desired, subscribed, applying } = aisCoverageController().snapshot();
+  return { desired, subscribed, applying };
+}
+
+/** Public, read-only GET /api/ais-regions body. No key, no environment data. */
+export function aisRegionsStatusPayload() {
+  const enabled = aisRegionsEnabled();
+  const feed = aisStreamStatusSnapshot();
+  const coverage = enabled ? aisCoverageController().snapshot() : null;
+  return {
+    mode: enabled ? 'regions' : 'legacy-env',
+    regions: publicRegionCatalogue(),
+    desired: coverage?.desired ?? [],
+    subscribed: coverage?.subscribed ?? [],
+    applying: coverage?.applying ?? false,
+    lastSubscribedAt: coverage?.lastSubscribedAt ?? null,
+    minRegions: AIS_REGION_LIMITS.minRegions,
+    maxRegions: AIS_REGION_LIMITS.maxRegions,
+    maxBoxes: AIS_REGION_LIMITS.maxBoxes,
+    boxCount: coverage ? boxesForRegions(coverage.subscribed).length : 0,
+    writeEnabled: enabled && Boolean(process.env.AIS_REGIONS_ADMIN_TOKEN),
+    connection: {
+      status: feed.status,
+      reconnectAttempt: feed.reconnectAttempt,
+      lastMessageAt: feed.lastMessageAt,
+    },
+    vessels: _aisStreamVessels.size,
+    messages: {
+      total: _aisMessageCount,
+      ratePerSec: aisMessageRatePerSec(),
+      droppedOutOfCoverage: _aisOutOfCoverageDropped,
+    },
+  };
+}
+
+let _aisRegionsWriteLimiter = makeRateLimiter({ windowMs: 60_000, max: 12, globalMax: 30 });
+
+/** Test seam: start a fresh rate-limit window. */
+export function resetAisRegionsWriteLimiterForTest() {
+  _aisRegionsWriteLimiter = makeRateLimiter({ windowMs: 60_000, max: 12, globalMax: 30 });
+}
+const AIS_REGIONS_MAX_BODY_BYTES = 2048;
+
+/**
+ * Authorization seam for region WRITES.
+ *
+ * There is no browser-safe owner authentication in this app: Provider Settings'
+ * admission is loopback-only and is not installed under `vite preview` (the
+ * production path). So writes require a server-configured shared secret sent in
+ * a request header, and are refused outright when none is configured - the
+ * default. The secret lives only in the server environment; no browser code
+ * ever holds it.
+ *
+ * @param {Record<string,string|string[]|undefined>} headers Lower-cased request headers.
+ * @param {Record<string,string|undefined>} [env]
+ * @returns {{ok: true} | {ok: false, status: number, error: string}}
+ */
+export function authorizeAisRegionsWrite(headers, env = process.env) {
+  const expected = env.AIS_REGIONS_ADMIN_TOKEN;
+  if (!expected) return { ok: false, status: 403, error: 'Region changes are not enabled on this server.' };
+  const raw = headers?.['x-gev-admin-token'];
+  const supplied = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof supplied !== 'string' || !supplied) return { ok: false, status: 401, error: 'Authorization required.' };
+  const a = createHash('sha256').update(supplied).digest();
+  const b = createHash('sha256').update(String(expected)).digest();
+  return timingSafeEqual(a, b) ? { ok: true } : { ok: false, status: 401, error: 'Authorization required.' };
+}
+
+/** Same-origin check for browser callers; non-browser callers send no Origin. */
+function originAllowed(headers) {
+  const origin = headers?.origin;
+  if (!origin) return true;
+  try {
+    return new URL(String(origin)).host === String(headers.host || '');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Process one POST /api/ais-regions request. Pure of HTTP: returns
+ * `{status, payload}` so the whole policy is testable without a server.
+ *
+ * Order: rate limit, authorization, origin, content type, size, mode, body, validation.
+ *
+ * @param {{headers: object, bodyText: string, clientKey: string}} request
+ * @returns {{status: number, payload: object}}
+ */
+export function processAisRegionsWrite({ headers = {}, bodyText = '', clientKey = 'local' }) {
+  if (!_aisRegionsWriteLimiter(clientKey)) {
+    return { status: 429, payload: { error: 'Rate limit exceeded' } };
+  }
+  const auth = authorizeAisRegionsWrite(headers);
+  if (!auth.ok) return { status: auth.status, payload: { error: auth.error } };
+  if (!originAllowed(headers)) return { status: 403, payload: { error: 'Cross-origin request refused.' } };
+  if (!/^application\/json\b/i.test(String(headers['content-type'] || ''))) {
+    return { status: 415, payload: { error: 'Content-Type must be application/json.' } };
+  }
+  if (Buffer.byteLength(bodyText, 'utf8') > AIS_REGIONS_MAX_BODY_BYTES) {
+    return { status: 413, payload: { error: 'Request body too large.' } };
+  }
+  if (!aisRegionsEnabled()) {
+    return { status: 409, payload: { error: 'Regional coverage is not enabled on this server.' } };
+  }
+  let body;
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    return { status: 400, payload: { error: 'Body must be valid JSON.' } };
+  }
+  // Only the `regions` array is read; any other field (boxes, coordinates) is ignored, never applied.
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { status: 400, payload: { error: 'Body must be a JSON object.' } };
+  }
+  const result = aisCoverageController().setDesired(body.regions);
+  if (!result.ok) return { status: 400, payload: { error: result.error } };
+  const { desired, subscribed, applying } = aisCoverageController().snapshot();
+  return { status: 202, payload: { desired, subscribed, applying } };
+}
+
 /**
  * Vite plugin: AISStream live vessel cache.
  *
@@ -5108,6 +5265,43 @@ function adsbLolProxy() {
  */
 function aisLiveProxy() {
   function install(middlewares) {
+    middlewares.use('/api/ais-regions', (req, res) => {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.method === 'GET') {
+        res.statusCode = 200;
+        res.end(JSON.stringify(aisRegionsStatusPayload()));
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.statusCode = 405;
+        res.setHeader('Allow', 'GET, POST');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      let body = '';
+      let overflowed = false;
+      req.on('data', (chunk) => {
+        if (overflowed) return;
+        body += chunk;
+        if (body.length > AIS_REGIONS_MAX_BODY_BYTES * 2) {
+          overflowed = true;
+          res.statusCode = 413;
+          res.end(JSON.stringify({ error: 'Request body too large.' }));
+          req.destroy();
+        }
+      });
+      req.on('end', () => {
+        if (overflowed) return;
+        const result = processAisRegionsWrite({
+          headers: req.headers,
+          bodyText: body,
+          clientKey: clientKey(req),
+        });
+        res.statusCode = result.status;
+        res.end(JSON.stringify(result.payload));
+      });
+    });
     middlewares.use('/api/ais-live', async (req, res) => {
       try {
         ensureAisStreamConnection();
@@ -5157,6 +5351,7 @@ function aisLiveProxy() {
           nextAttemptAt: feed.nextAttemptAt,
           staleAfterMs: feed.staleAfterMs,
           watchdog: feed.watchdog,
+          coverage: aisCoverageSummary(),
         }));
       } catch (error) {
         res.statusCode = 502;
@@ -6708,7 +6903,7 @@ function aisWebSocketImpl() {
 export function aisWatchdogPolicy() {
   if (_aisWatchdogPolicy) return _aisWatchdogPolicy;
   const customSubscription = Boolean(
-    process.env.AISSTREAM_BOUNDING_BOXES || process.env.AISSTREAM_MESSAGE_TYPES,
+    process.env.AISSTREAM_BOUNDING_BOXES || process.env.AISSTREAM_MESSAGE_TYPES || aisRegionsEnabled(),
   );
   const override = parseSilenceTimeoutEnv(
     process.env.AISSTREAM_SILENCE_TIMEOUT_MS,
@@ -6780,6 +6975,9 @@ function aisAdapter() {
     warn: (message) => console.warn(redactAisKey(message)),
     redact: redactAisKey,
     onSubscriptionConfirmed: logAisSubscriptionConfirmed,
+    // Every subscription that hits the wire (connect or in-place update) tells
+    // the coverage controller what the upstream now believes.
+    onSubscriptionSent: () => { if (aisRegionsEnabled()) aisCoverageController().markSubscribed(); },
   });
   _aisAdapter.setWatchdogOptions(aisWatchdogBudgets());
   return _aisAdapter;
@@ -6877,6 +7075,11 @@ function disposeAisStream() {
     _aisStreamTickTimer = null;
   }
   if (_aisAdapter) _aisAdapter.dispose();
+  // Runtime coverage is process-local and does not survive a server restart.
+  if (_aisCoverage) {
+    _aisCoverage.dispose();
+    _aisCoverage = null;
+  }
   // Drop the cached policy and re-arm LAZILY. Re-deriving budgets here would
   // read process.env before the restarted server's loadEnv() has repopulated
   // it, caching the outgoing configuration; the next ensure() runs after that.
@@ -6884,10 +7087,61 @@ function disposeAisStream() {
   _aisNeedsRearm = true;
 }
 
+/**
+ * Regional coverage is opt-in: AISSTREAM_REGIONS_ENABLED=1. Until it is set the
+ * server behaves exactly as before, driven by AISSTREAM_BOUNDING_BOXES.
+ */
+export function aisRegionsEnabled() {
+  return process.env.AISSTREAM_REGIONS_ENABLED === '1';
+}
+
+/** The coverage controller, created on first use with the env-configured default. */
+export function aisCoverageController() {
+  if (_aisCoverage) return _aisCoverage;
+  const initial = parseDefaultRegionsEnv(process.env.AISSTREAM_DEFAULT_REGIONS);
+  if (initial.warning) console.warn(`[AISStream] ${initial.warning}`);
+  if (process.env.AISSTREAM_BOUNDING_BOXES) {
+    console.warn('[AISStream] AISSTREAM_REGIONS_ENABLED=1: AISSTREAM_BOUNDING_BOXES is ignored.');
+  }
+  _aisCoverage = createAisCoverageController({
+    initial: initial.regions,
+    applyToSocket: () => aisAdapter().resubscribe(),
+    onSubscribedChange: () => purgeAisOutsideCoverage(),
+  });
+  return _aisCoverage;
+}
+
+/** Test seam: forget the coverage controller and counters. */
+export function resetAisCoverageForTest() {
+  if (_aisCoverage) _aisCoverage.dispose();
+  _aisCoverage = null;
+  _aisMessageCount = 0;
+  _aisOutOfCoverageDropped = 0;
+  _aisRateSample = { at: 0, count: 0, perSec: null };
+}
+
+/**
+ * Evict dynamic vessel state outside the DESIRED coverage. Static metadata is
+ * kept (small, TTL-bound, useful if a region comes back). O(cache) once per
+ * actual coverage change, never per request.
+ */
+function purgeAisOutsideCoverage() {
+  const inCoverage = _aisCoverage?.desiredMatcher();
+  if (!inCoverage) return;
+  for (const [mmsi, row] of [..._aisStreamVessels]) {
+    if (!inCoverage(row.lat, row.lon)) evictAisVessel(mmsi);
+  }
+  for (const [mmsi, pending] of [..._aisStreamTrackPending]) {
+    if (!inCoverage(pending.lat, pending.lon)) _aisStreamTrackPending.delete(mmsi);
+  }
+}
+
 export function aisStreamSubscription() {
   return {
     APIKey: process.env.AISSTREAM_API_KEY,
-    BoundingBoxes: parseJsonEnv('AISSTREAM_BOUNDING_BOXES', AISSTREAM_DEFAULT_BBOXES),
+    BoundingBoxes: aisRegionsEnabled()
+      ? boxesForRegions(aisCoverageController().getDesired())
+      : parseJsonEnv('AISSTREAM_BOUNDING_BOXES', AISSTREAM_DEFAULT_BBOXES),
     FilterMessageTypes: parseCsvOrJsonEnv('AISSTREAM_MESSAGE_TYPES', AISSTREAM_DEFAULT_MESSAGE_TYPES),
   };
 }
@@ -6915,6 +7169,7 @@ export function ingestAisStreamEnvelope(envelope) {
   const mmsi = stringValue(metadata.MMSI ?? message.UserID ?? message.UserId ?? message.Mmsi);
   if (!mmsi) return false;
   const now = Date.now();
+  _aisMessageCount += 1;
 
   if (messageType === 'ShipStaticData' || messageType === 'StaticDataReport') {
     const previous = _aisStreamStatic.get(mmsi);
@@ -6939,6 +7194,20 @@ export function ingestAisStreamEnvelope(envelope) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
     maybePruneAisStreamCache(now);
     return true;
+  }
+
+  // Coverage guard. It follows DESIRED coverage, not last-subscribed: when an
+  // owner turns a region off its vessels must stop being refreshed at once,
+  // even during the debounce, or the removed region would look still live.
+  // (A region being ADDED needs no special case - upstream sends nothing for it
+  // until the subscription lands.) The record still counts as feed liveness.
+  if (aisRegionsEnabled()) {
+    const inCoverage = aisCoverageController().desiredMatcher();
+    if (inCoverage && !inCoverage(lat, lon)) {
+      _aisOutOfCoverageDropped += 1;
+      maybePruneAisStreamCache(now);
+      return true;
+    }
   }
 
   const staticData = _aisStreamStatic.get(mmsi) || {};

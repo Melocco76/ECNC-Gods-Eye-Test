@@ -401,6 +401,21 @@ export function createAisWatchdog(options = {}) {
     return [];
   }
 
+  /**
+   * The subscription on the owned socket was replaced in place (regional
+   * coverage change). The socket, the generation and the retry ladder are all
+   * untouched — this is NOT a reconnect — but the silence window restarts,
+   * because the new coverage may legitimately be quieter than the old.
+   * While the key is being refused the probe's bounded lifetime is left alone.
+   */
+  function onResubscribe(eventGeneration) {
+    if (!ownsGeneration(eventGeneration)) {
+      return [{ type: 'terminate', generation: eventGeneration, reason: 'orphan' }];
+    }
+    if (status !== 'auth-failed') silenceSinceMono = clock.mono();
+    return [];
+  }
+
   /** The socket closed on its own. */
   function onClose(eventGeneration) {
     if (!ownsGeneration(eventGeneration)) return [];
@@ -487,6 +502,7 @@ export function createAisWatchdog(options = {}) {
     onOpen,
     onMessage,
     onConfirmation,
+    onResubscribe,
     onClose,
     onFailure,
     dispose,

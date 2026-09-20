@@ -32,6 +32,9 @@ const DEFAULT_CLOCK = Object.freeze({
 });
 
 /** Upstream text that identifies a credential rejection. */
+/** `ws` readyState for an open connection (WebSocket.OPEN). */
+const SOCKET_OPEN = 1;
+
 const AUTH_TEXT = /(unauthoriz|unauthoris|forbidden|invalid\s*api[\s_-]*key|invalid\s*key|bad\s*api[\s_-]*key|authentic|api\s*key\s*(is\s*)?(invalid|required|missing|not\s*valid))/i;
 
 /** Upstream text that identifies a rate limit / connection cap. */
@@ -295,6 +298,8 @@ export function parseSubscriptionConfirmation(envelope) {
  * @param {(message: string) => void} [options.warn]
  * @param {(confirmation: {compressionEnabled: boolean|null}) => void} [options.onSubscriptionConfirmed]
  *   Called once per confirmed subscription. Receives no key or payload.
+ * @param {() => void} [options.onSubscriptionSent] Called after a subscription
+ *   (initial or in-place update) was written to the socket. Receives nothing.
  * @param {(text: string) => string} [options.redact] Scrubs secrets from any
  *   upstream-supplied text before it reaches the watchdog (and so /api/ais-live).
  * @returns {Object} adapter handle
@@ -308,6 +313,7 @@ export function createAisStreamAdapter(options) {
     clock = DEFAULT_CLOCK,
     warn = () => {},
     onSubscriptionConfirmed = () => {},
+    onSubscriptionSent = () => {},
     redact = (text) => text,
   } = options;
 
@@ -439,7 +445,9 @@ export function createAisStreamAdapter(options) {
         socket.send(JSON.stringify(buildSubscription()));
       } catch (error) {
         failGeneration(owner, generation, classifyAisFailure({ message: error?.message }));
+        return;
       }
+      notifySubscriptionSent();
     });
 
     on('message', (data) => {
@@ -562,6 +570,49 @@ export function createAisStreamAdapter(options) {
     runActions(owner, owner.onMessage(generation));
   }
 
+  /** Report a written subscription; a throwing observer must never break the socket. */
+  function notifySubscriptionSent() {
+    try {
+      onSubscriptionSent();
+    } catch (error) {
+      warn(`[AISStream] subscription observer failed: ${scrub(error?.message || error)}`);
+    }
+  }
+
+  /**
+   * Replace the subscription on the CURRENTLY OWNED, OPEN socket (AISStream:
+   * "resending a subscription replaces the active configuration").
+   *
+   * Never opens a socket, never terminates one, and never touches the retry
+   * ladder on success. When there is nothing to send on it returns
+   * `{sent:false}` and changes nothing: the next socket's `open` builds its
+   * subscription from the then-current configuration anyway. A send that
+   * throws is a transport failure like any other and goes through the
+   * watchdog (terminate, then the normal ladder).
+   *
+   * @returns {{sent: boolean, reason?: string, generation?: number}}
+   */
+  function resubscribe() {
+    const owner = watchdog;
+    if (!owner) return { sent: false, reason: 'no-watchdog' };
+    const state = owner.debugState();
+    const generation = state.owned;
+    if (generation === null || generation === undefined) return { sent: false, reason: 'no-socket' };
+    if (state.status === 'auth-failed') return { sent: false, reason: 'auth-failed' };
+    const socket = sockets.get(generation);
+    if (!socket) return { sent: false, reason: 'no-socket' };
+    if (socket.readyState !== SOCKET_OPEN) return { sent: false, reason: 'not-open' };
+    try {
+      socket.send(JSON.stringify(buildSubscription()));
+    } catch (error) {
+      failGeneration(owner, generation, classifyAisFailure({ message: error?.message }));
+      return { sent: false, reason: 'send-failed' };
+    }
+    runActions(owner, owner.onResubscribe(generation));
+    notifySubscriptionSent();
+    return { sent: true, generation };
+  }
+
   /** Drive the machine once: re-declare the environment, then advance time. */
   function ensure(env) {
     if (!watchdog) setWatchdogOptions();
@@ -585,6 +636,7 @@ export function createAisStreamAdapter(options) {
   return {
     setWatchdogOptions,
     ensure,
+    resubscribe,
     dispose,
     snapshot: () => (watchdog ? watchdog.snapshot() : null),
     /** Diagnostics for tests. */
