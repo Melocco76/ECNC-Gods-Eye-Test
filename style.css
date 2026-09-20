@@ -9957,8 +9957,15 @@ summary:focus-visible {
 /* Read-only AIS coverage (regional mode only). */
 .data-toggle-coverage { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
 .data-toggle-coverage-label { font-weight: 600; color: var(--text-primary); }
-.data-toggle-coverage-list { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 0; padding: 0; list-style: none; }
-.data-toggle-coverage-list li::before { content: '\2022\00a0'; color: var(--accent); }
+/* Read-only status list: a [x]/[ ] marker plus an On/Off word, so state never rests on colour alone. */
+.data-toggle-coverage-list { display: flex; flex-wrap: wrap; flex-basis: 100%; gap: 2px 10px; margin: 0; padding: 0; list-style: none; }
+.data-toggle-coverage-item { display: inline-flex; align-items: baseline; gap: 4px; }
+.data-toggle-coverage-item .coverage-mark { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.data-toggle-coverage-item[data-active='true'] { color: var(--text-primary); }
+.data-toggle-coverage-item[data-active='true'] .coverage-mark { color: var(--accent); }
+.data-toggle-coverage-item[data-active='false'] { color: var(--text-secondary); opacity: 0.85; }
+.data-toggle-coverage-item .coverage-state { font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
+.data-toggle-coverage-note { flex-basis: 100%; font-size: 0.92em; font-style: italic; color: var(--text-secondary); }
 .data-toggle-coverage-status { flex-basis: 100%; color: var(--status-warn); }
 .data-toggle-coverage-status::before { content: '\21BB\00a0'; }
 .data-toggle-coverage-slot:empty { display: none; }
@@ -10278,3 +10285,72 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
 
 /* Loading screen: the ECNC logo leads; the original eye/globe mark is a small secondary mark. */
 .loader-content .loader-logo { width: 40px; margin: 0 auto 12px; filter: none; }
+
+/* ══ Readable native selects ═══════════════════════════════════════════════════════════
+   A translucent select background makes Chrome paint the native option popup white, and
+   the light option text then vanishes (white on white). Opt the controls into the dark
+   colour scheme, give them an OPAQUE surface, and colour the options explicitly. The
+   popup itself stays native, so keyboard, touch and screen-reader behaviour are unchanged. */
+select,
+.pp-select,
+#hud-layout-select,
+#cctv-camera-select,
+#scene-select,
+#radio-filter,
+#cctv-panel select {
+  color-scheme: dark;
+  background-color: #111a2b;
+  color: #e8eefb;
+}
+select option,
+select optgroup,
+.pp-select option,
+#scene-select option,
+#cctv-camera-select option,
+#hud-layout-select option,
+#radio-filter option {
+  background-color: #111a2b;
+  color: #e8eefb;
+}
+select option:checked,
+select option:hover {
+  background-color: #1f3556;
+  color: #ffffff;
+}
+select option:disabled,
+select optgroup:disabled {
+  color: #8b97ad;
+}
+select:disabled,
+select[disabled] {
+  background-color: #0e1524;
+  color: #8b97ad;
+  cursor: not-allowed;
+}
+select:focus-visible {
+  outline: 2px solid var(--accent, #4fc3f7);
+  outline-offset: 1px;
+}
+/* High-contrast modes: hand every colour back to the system so nothing is forced. */
+@media (forced-colors: active) {
+  select,
+  .pp-select,
+  #hud-layout-select,
+  #cctv-camera-select,
+  #scene-select,
+  #radio-filter,
+  #cctv-panel select,
+  select option,
+  select optgroup,
+  select option:checked,
+  select option:hover {
+    color-scheme: normal;
+    background-color: Field;
+    color: FieldText;
+  }
+  select:disabled,
+  select option:disabled {
+    background-color: Field;
+    color: GrayText;
+  }
+}

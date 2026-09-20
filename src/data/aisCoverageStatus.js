@@ -1,40 +1,65 @@
 /**
  * @module aisCoverageStatus
- * @description READ-ONLY view of the AIS regional coverage for the Vessels row.
+ * @description READ-ONLY view of the AIS coverage for the Vessels row.
  *
  * It only ever reads: the public `GET /api/ais-regions` payload and the additive
  * `coverage` block of `/api/ais-live`. There is no write path in the browser -
- * changing coverage needs owner authorization, and the browser holds no
- * credential for it. The row reserves an empty slot for future owner-only
- * switches (see DataLayerManager._syncRowCoverage).
+ * changing coverage needs owner authorization (a server-side shared secret that
+ * no browser code holds), and this app has no browser-safe owner sign-in yet, so
+ * every region is shown as a status indicator, never as a switch. The row
+ * reserves an empty slot for owner switches that may exist once an owner
+ * sign-in does (see DataLayerManager._syncRowCoverage).
  */
 import { publicRegionCatalogue } from './aisRegions.js';
 
-const LABELS = new Map(publicRegionCatalogue().map((region) => [region.id, region.label]));
+const CATALOGUE = publicRegionCatalogue();
+const LABELS = new Map(CATALOGUE.map((region) => [region.id, region.label]));
+
+/** Shown when regional selection is off: production's fixed subscription area. */
+export const AIS_FIXED_COVERAGE_NOTE = 'Fixed area: northern Gulf of Mexico';
+/** Shown under an active regional list. Honest about who can change it. */
+export const AIS_OWNER_CONTROL_NOTE = 'Coverage is set by the site owner';
 
 /**
- * Turn either payload shape into the row's coverage model, or null when
- * regional mode is off / unknown (the row then renders exactly as before).
+ * Turn either payload shape into the row's coverage model, or null when the
+ * server did not report coverage at all (an older server): the row then renders
+ * exactly as before.
+ *
+ * Two kinds of model:
+ *  - `kind: 'regions'`: regional mode is on. `items` lists EVERY predefined
+ *    region with an `active` flag (what the socket was last told), so the row
+ *    reads as a status list, plus `applying` while a change is in flight.
+ *  - `kind: 'fixed'`: regional mode is off (legacy bounding box). There is no
+ *    region list to show, only the fixed area.
  *
  * @param {object|null|undefined} input GET /api/ais-regions body, or the
  *   `coverage` block of /api/ais-live: `{desired, subscribed, applying}`.
- * @returns {{label: string, items: {id: string, label: string}[], applying: boolean, writable: false}|null}
+ * @returns {{kind: 'regions'|'fixed', label: string, items: {id: string, label: string, active: boolean}[],
+ *   note: string, applying: boolean, writable: false}|null}
  */
 export function buildAisCoverageModel(input) {
   if (!input || typeof input !== 'object') return null;
-  if (input.mode === 'legacy-env') return null;
   const desired = Array.isArray(input.desired) ? input.desired : [];
   const subscribed = Array.isArray(input.subscribed) ? input.subscribed : [];
+  const regional = input.mode === 'regions' || (input.mode === undefined && (desired.length > 0 || subscribed.length > 0));
+  if (!regional) {
+    return {
+      kind: 'fixed',
+      label: 'Coverage',
+      items: [],
+      note: AIS_FIXED_COVERAGE_NOTE,
+      applying: false,
+      writable: false,
+    };
+  }
   // What the socket was last told is what the user is looking at; before the
   // first subscription lands, show what was asked for.
-  const ids = subscribed.length ? subscribed : desired;
-  const items = ids
-    .filter((id) => typeof id === 'string' && LABELS.has(id))
-    .map((id) => ({ id, label: LABELS.get(id) }));
-  if (!items.length) return null;
+  const active = new Set((subscribed.length ? subscribed : desired).filter((id) => LABELS.has(id)));
   return {
+    kind: 'regions',
     label: 'Coverage',
-    items,
+    items: CATALOGUE.map(({ id, label }) => ({ id, label, active: active.has(id) })),
+    note: AIS_OWNER_CONTROL_NOTE,
     applying: Boolean(input.applying),
     writable: false,
   };

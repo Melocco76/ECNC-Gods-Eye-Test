@@ -343,27 +343,40 @@ const GET_PAYLOAD = {
   writeEnabled: false,
 };
 
-test('GET /api/ais-regions payload renders as a compact coverage list', () => {
+const ALL_REGIONS = ['gulf', 'east-coast', 'west-coast', 'great-lakes'];
+const ALL_LABELS = ['Gulf of Mexico', 'U.S. East Coast', 'U.S. West Coast', 'Great Lakes'];
+
+test('GET /api/ais-regions payload lists all four regions with the active ones flagged', () => {
   const model = buildAisCoverageModel(GET_PAYLOAD);
-  assert.deepEqual(model.items, [{ id: 'gulf', label: 'Gulf of Mexico' }, { id: 'east-coast', label: 'U.S. East Coast' }]);
+  assert.equal(model.kind, 'regions');
+  assert.deepEqual(model.items.map((i) => i.id), ALL_REGIONS);
+  assert.deepEqual(model.items.map((i) => i.label), ALL_LABELS);
+  assert.deepEqual(model.items.map((i) => i.active), [true, true, false, false]);
   assert.equal(model.label, 'Coverage');
   assert.equal(model.applying, false);
   assert.equal(model.writable, false, 'the browser model is read-only');
+  assert.equal(model.note, 'Coverage is set by the site owner');
 });
 
 test('the /api/ais-live coverage block works too, and pending changes are flagged', () => {
   const model = buildAisCoverageModel({ desired: ['east-coast'], subscribed: ['gulf'], applying: true });
-  assert.deepEqual(model.items.map((i) => i.id), ['gulf'], 'shows what the socket was last told');
+  assert.deepEqual(model.items.filter((i) => i.active).map((i) => i.id), ['gulf'], 'shows what the socket was last told');
   assert.equal(model.applying, true);
-  assert.deepEqual(buildAisCoverageModel({ desired: ['gulf'], subscribed: [], applying: true }).items.map((i) => i.id), ['gulf']);
+  assert.deepEqual(buildAisCoverageModel({ desired: ['gulf'], subscribed: [], applying: true }).items.filter((i) => i.active).map((i) => i.id), ['gulf']);
+  assert.deepEqual(buildAisCoverageModel({ desired: ['atlantis'], subscribed: [] }).items.filter((i) => i.active), [], 'unknown ids are dropped');
 });
 
-test('legacy / unknown mode renders the normal Vessels row with no coverage pretence', () => {
-  assert.equal(buildAisCoverageModel({ mode: 'legacy-env', desired: [], subscribed: [], applying: false }), null);
-  assert.equal(buildAisCoverageModel({ desired: [], subscribed: [], applying: false }), null, 'live block in legacy mode');
+test('legacy mode shows only the fixed area, never a region list or switches', () => {
+  for (const input of [{ mode: 'legacy-env', desired: [], subscribed: [], applying: false }, { desired: [], subscribed: [], applying: false }]) {
+    const model = buildAisCoverageModel(input);
+    assert.equal(model.kind, 'fixed');
+    assert.deepEqual(model.items, []);
+    assert.equal(model.note, 'Fixed area: northern Gulf of Mexico');
+    assert.equal(model.writable, false);
+    assert.equal(model.applying, false);
+  }
   assert.equal(buildAisCoverageModel(null), null);
   assert.equal(buildAisCoverageModel(undefined), null);
-  assert.equal(buildAisCoverageModel({ desired: ['atlantis'], subscribed: [] }), null, 'unknown ids are dropped');
 });
 
 test('fetchAisRegionsStatus only ever GETs, and a failure means unknown', async () => {
@@ -398,7 +411,11 @@ test('the manager renders coverage as a read-only list, an updating marker, and 
     assert.equal(controls.hidden, false);
     const node = controls.querySelector('.data-toggle-coverage');
     assert.ok(node);
-    assert.deepEqual(node.querySelectorAll('li').map((li) => li.textContent), ['Gulf of Mexico', 'U.S. East Coast']);
+    const items = node.querySelectorAll('li');
+    assert.deepEqual(items.map((li) => li.querySelector('.coverage-name').textContent), ALL_LABELS, 'all four regions shown');
+    assert.deepEqual(items.map((li) => li.querySelector('.coverage-mark').textContent), ['[x]', '[x]', '[ ]', '[ ]']);
+    assert.deepEqual(items.map((li) => li.querySelector('.coverage-state').textContent), ['On', 'On', 'Off', 'Off'], 'words, not colour alone');
+    assert.equal(node.querySelector('.data-toggle-coverage-note').textContent, 'Coverage is set by the site owner');
     assert.equal(node.querySelectorAll('input').length, 0, 'no inputs: nothing writable');
     assert.equal(node.querySelectorAll('button').length, 0, 'no buttons: nothing writable');
     const slot = node.querySelector('[data-region-controls-slot]');
@@ -410,7 +427,14 @@ test('the manager renders coverage as a read-only list, an updating marker, and 
     mgr._refreshTogglePanel();
     assert.equal(controls.querySelector('.data-toggle-coverage-status').textContent, 'Updating coverage…', 'status is text, not colour alone');
 
-    model = null; // legacy mode
+    model = buildAisCoverageModel({ mode: 'legacy-env', desired: [], subscribed: [] });
+    mgr._refreshTogglePanel();
+    const fixed = controls.querySelector('.data-toggle-coverage');
+    assert.equal(fixed.querySelectorAll('li').length, 0, 'no region list in legacy mode');
+    assert.equal(fixed.querySelector('.data-toggle-coverage-note').textContent, 'Fixed area: northern Gulf of Mexico');
+    assert.equal(fixed.querySelectorAll('input').length + fixed.querySelectorAll('button').length, 0);
+
+    model = null; // server reported nothing
     mgr._refreshTogglePanel();
     assert.equal(controls.querySelector('.data-toggle-coverage'), null);
     assert.equal(controls.hidden, true, 'the normal Vessels row, no coverage');
@@ -588,4 +612,19 @@ test('no browser code writes AIS regions or holds an admin credential', () => {
   assert.equal(/type="password"/.test(html), false, 'no password box');
   assert.equal(/ais-regions|AIS_REGIONS/.test(read('./layerDrawer.js')), false);
   assert.equal(css.includes('data-region-controls-slot') || css.includes('.data-toggle-coverage-slot:empty'), true, 'slot exists but is empty/hidden');
+});
+
+test('public users cannot alter AIS coverage: the row has no interactive region control and no write path', () => {
+  const manager = read('./data/manager.js');
+  const start = manager.indexOf('  _syncRowCoverage(container, controls) {');
+  const coverage = manager.slice(start, manager.indexOf('\n  }\n', start));
+  assert.ok(coverage.length > 500, 'sliced the whole method');
+  assert.equal(/createElement\('(input|button|select|a|form)'\)/.test(coverage), false, 'coverage renders only spans/lists');
+  assert.equal(/addEventListener|onclick|fetch\(|XMLHttpRequest|sendBeacon/.test(coverage), false, 'no handlers or requests');
+  for (const file of ['./data/aisCoverageStatus.js', './data/aisLiveVessels.js', './data/manager.js', './ui.js', './main.js', './layerDrawer.js']) {
+    const source = read(file);
+    assert.equal(/ais-regions[^\n]*\b(POST|PUT|PATCH)\b|\b(POST|PUT|PATCH)\b[^\n]*ais-regions/.test(source), false, `${file}: no write to the regions endpoint`);
+    assert.equal(/(local|session)Storage[^\n]*(admin|token)|cookie[^\n]*(admin|token)/i.test(source), false, `${file}: no credential storage`);
+  }
+  assert.equal(/\?[^"'\s]*(token|admin)=/i.test(read('./data/aisCoverageStatus.js')), false, 'no credential in a query string');
 });

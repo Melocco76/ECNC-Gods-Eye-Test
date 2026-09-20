@@ -2237,7 +2237,7 @@ export class DataLayerManager {
 
   /**
    * Optional READ-ONLY coverage summary (used by the AIS row): a label, one
-   * item per active coverage area, an "updating" marker while a change is in
+   * status line per predefined region (or a single fixed-area note), an "updating" marker while a change is in
    * flight, and an empty slot reserved for future owner-only controls. It holds
    * no inputs and no listeners, so it is simply replaced when it changes.
    * @param {HTMLElement} container The row's `.data-toggle-controls` node.
@@ -2250,24 +2250,42 @@ export class DataLayerManager {
       existing?.remove();
       return;
     }
-    const signature = JSON.stringify([coverage.label, coverage.items, Boolean(coverage.applying)]);
+    const signature = JSON.stringify([coverage.kind, coverage.label, coverage.items, coverage.note, Boolean(coverage.applying)]);
     if (existing && existing.dataset.signature === signature) return;
     const node = document.createElement('div');
     node.className = 'data-toggle-coverage';
     node.dataset.controlKind = 'coverage';
     node.dataset.signature = signature;
+    node.dataset.coverageKind = String(coverage.kind || 'regions');
     const label = document.createElement('span');
     label.className = 'data-toggle-coverage-label';
     label.textContent = coverage.label || 'Coverage';
-    const list = document.createElement('ul');
-    list.className = 'data-toggle-coverage-list';
-    for (const item of coverage.items || []) {
-      const li = document.createElement('li');
-      li.dataset.regionId = String(item.id);
-      li.textContent = item.label;
-      list.appendChild(li);
+    node.appendChild(label);
+    if ((coverage.items || []).length) {
+      const list = document.createElement('ul');
+      list.className = 'data-toggle-coverage-list';
+      list.setAttribute('aria-label', 'Active AIS coverage (read only)');
+      for (const item of coverage.items) {
+        const li = document.createElement('li');
+        li.className = 'data-toggle-coverage-item';
+        li.dataset.regionId = String(item.id);
+        li.dataset.active = item.active ? 'true' : 'false';
+        // Status, not a control: a text marker plus an On/Off word, never colour alone.
+        const mark = document.createElement('span');
+        mark.className = 'coverage-mark';
+        mark.setAttribute('aria-hidden', 'true');
+        mark.textContent = item.active ? '[x]' : '[ ]';
+        const name = document.createElement('span');
+        name.className = 'coverage-name';
+        name.textContent = item.label;
+        const state = document.createElement('span');
+        state.className = 'coverage-state';
+        state.textContent = item.active ? 'On' : 'Off';
+        li.append(mark, name, state);
+        list.appendChild(li);
+      }
+      node.appendChild(list);
     }
-    node.append(label, list);
     if (coverage.applying) {
       const status = document.createElement('span');
       status.className = 'data-toggle-coverage-status';
@@ -2275,8 +2293,14 @@ export class DataLayerManager {
       status.textContent = 'Updating coverage…';
       node.appendChild(status);
     }
-    // Reserved for the future owner-only region switches. Intentionally empty:
-    // no write controls exist until owner authentication does.
+    if (coverage.note) {
+      const note = document.createElement('span');
+      note.className = 'data-toggle-coverage-note';
+      note.textContent = coverage.note;
+      node.appendChild(note);
+    }
+    // Reserved for future owner-only region switches. Intentionally empty: no
+    // write controls exist until a browser-safe owner sign-in does.
     const slot = document.createElement('div');
     slot.className = 'data-toggle-coverage-slot';
     slot.dataset.regionControlsSlot = '';
