@@ -9816,7 +9816,7 @@ summary:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-@media (max-width: 1279px) { #app-header #title-bar .subtitle { display: none; } }
+@media (max-width: 1339px) { #app-header #title-bar .subtitle { display: none; } }
 
 #app-header-center {
   flex: 1 1 auto;
@@ -9844,7 +9844,7 @@ summary:focus-visible {
 #app-header-search { display: flex; align-items: center; min-width: 0; }
 #app-header-search .location-search-wrap { position: static; display: flex; align-items: center; gap: 6px; }
 #app-header #location-search {
-  width: min(280px, 24vw);
+  width: min(240px, 20vw);
   min-width: 140px;
   height: 34px;
   padding: 0 12px;
@@ -10247,3 +10247,34 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
   #app-header #title-bar h1 { font-size: 14px; }
   #app-header #title-bar .title-logo { width: 24px; }
 }
+
+/* ══ ECNC logo (public/ecnc-logo.png, 1254x1254 RGBA) ═══════════════════════
+   The artwork sits in a square canvas with transparent margins (content is about
+   1182x823, centred at ~43.6% down). Slots use the CONTENT aspect ratio and
+   object-fit: cover so the margins - never the artwork - are what is trimmed:
+   nothing is stretched or clipped, and CSS alone sets the rendered size. */
+.ecnc-logo,
+.brand-slot > img.ecnc-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  object-fit: cover;
+  object-position: 50% 43.6%;
+  pointer-events: none;
+  user-select: none;
+}
+#app-header #title-bar .brand-slot { position: relative; flex: 0 0 auto; width: 46px; height: 32px; overflow: hidden; }
+#ecnc-loader-brand-slot { width: min(210px, 62vw); height: auto; aspect-ratio: 1182 / 823; margin: 0 auto 8px; overflow: hidden; }
+
+@media (max-width: 767px) {
+  #app-header #title-bar .brand-slot { width: 43px; height: 30px; }
+  /* The eye/globe secondary mark stays on the loading screen; the phone header keeps room for the title. */
+  #app-header #title-bar .title-logo { display: none; }
+}
+@media (max-width: 359px) {
+  #app-header #title-bar .brand-slot { width: 39px; height: 27px; }
+}
+
+/* Loading screen: the ECNC logo leads; the original eye/globe mark is a small secondary mark. */
+.loader-content .loader-logo { width: 40px; margin: 0 auto 12px; filter: none; }

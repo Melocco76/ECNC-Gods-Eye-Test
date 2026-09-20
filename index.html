@@ -25,9 +25,9 @@
   <!-- Desktop header (about 56px). #title-bar keeps its id; the eye mark and brand slot live inside it. -->
   <header id="app-header">
     <div id="title-bar">
-      <!-- Brand slot: drop an ECNC logo <img> in here (or set data-logo-src) later.
-           Empty and collapsed until then; the eye mark below is the temporary secondary mark. -->
-      <h1><span id="ecnc-brand-slot" class="brand-slot" data-brand-slot></span><span class="title-logo brand-logo" data-logo-gaze data-logo-src="/logo.svg" aria-hidden="true"><img src="/logo.svg" alt="" /></span> <span>ECNC God's Eye</span></h1>
+      <!-- Brand slot: the Electronic Concepts NC logo (static public asset, sized by CSS).
+           The eye/globe mark after it is the secondary mark (decorative, empty alt). -->
+      <h1><span id="ecnc-brand-slot" class="brand-slot" data-brand-slot><img class="ecnc-logo" src="/ecnc-logo.png" alt="Electronic Concepts NC" width="1254" height="1254" decoding="async" /></span><span class="title-logo brand-logo" data-logo-gaze data-logo-src="/logo.svg" aria-hidden="true"><img src="/logo.svg" alt="" /></span> <span>ECNC God's Eye</span></h1>
       <p class="subtitle">Technology demonstration based on God's Eye View by Bilawal Sidhu</p>
     </div>
 
@@ -1079,7 +1079,7 @@
   <!-- Loading screen -->
   <div id="loading-screen">
     <div class="loader-content">
-      <span id="ecnc-loader-brand-slot" class="brand-slot loader-brand-slot" data-brand-slot></span>
+      <span id="ecnc-loader-brand-slot" class="brand-slot loader-brand-slot" data-brand-slot><img class="ecnc-logo" src="/ecnc-logo.png" alt="Electronic Concepts NC" width="1254" height="1254" fetchpriority="high" decoding="async" /></span>
       <span class="loader-logo brand-logo" data-logo-gaze data-logo-src="/logo.svg" aria-hidden="true"><img src="/logo.svg" alt="" /></span>
       <h2>ECNC God's Eye</h2>
       <p class="loader-tagline">Tech is Secondary; People are Primary.</p>
