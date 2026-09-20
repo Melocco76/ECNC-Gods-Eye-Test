@@ -3,12 +3,10 @@
  * @description READ-ONLY view of the AIS coverage for the Vessels row.
  *
  * It only ever reads: the public `GET /api/ais-regions` payload and the additive
- * `coverage` block of `/api/ais-live`. There is no write path in the browser -
- * changing coverage needs owner authorization (a server-side shared secret that
- * no browser code holds), and this app has no browser-safe owner sign-in yet, so
- * every region is shown as a status indicator, never as a switch. The row
- * reserves an empty slot for owner switches that may exist once an owner
- * sign-in does (see DataLayerManager._syncRowCoverage).
+ * `coverage` block of `/api/ais-live`. Nothing in this module writes. Changing
+ * coverage is a separate, owner-only path (src/data/ownerCoverage.js: an HttpOnly
+ * server session the page cannot read); to every other visitor each
+ * region is a status indicator, never a switch.
  */
 import { publicRegionCatalogue } from './aisRegions.js';
 

@@ -10286,6 +10286,66 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
 /* Loading screen: the ECNC logo leads; the original eye/globe mark is a small secondary mark. */
 .loader-content .loader-logo { width: 40px; margin: 0 auto 12px; filter: none; }
 
+/* ══ Owner controls (AIS region switches + sign-in dialog) ═════════════════════════════
+   Quiet by default: public visitors see one small "Owner controls / Sign in" line under
+   the read-only coverage. The dialog has no full-screen backdrop and is anchored near the
+   top, so the required credit line at the bottom is never covered. */
+.data-toggle-owner { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.data-toggle-owner-label { opacity: 0.8; }
+.data-toggle-owner-btn {
+  min-height: 24px; padding: 2px 10px; border: 1px solid var(--glass-border); border-radius: 6px;
+  background: transparent; color: var(--text-secondary); font: inherit; cursor: pointer;
+}
+.data-toggle-owner-btn:hover { border-color: var(--glass-border-hover); color: var(--text-primary); }
+.data-toggle-owner-btn:focus-visible,
+.data-toggle-owner-check:focus-visible { outline: 2px solid var(--accent, #4fc3f7); outline-offset: 2px; }
+.data-toggle-owner-regions { display: grid; flex-basis: 100%; gap: 2px; }
+.data-toggle-owner-region { display: flex; align-items: center; gap: 8px; min-height: 28px; color: var(--text-primary); cursor: pointer; }
+.data-toggle-owner-check { width: 16px; height: 16px; margin: 0; accent-color: var(--accent, #4fc3f7); }
+.data-toggle-owner-check:disabled { cursor: not-allowed; }
+.data-toggle-owner-region:has(.data-toggle-owner-check:disabled) { color: var(--text-secondary); cursor: not-allowed; }
+.data-toggle-owner-state { margin-left: auto; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
+.data-toggle-owner-hint,
+.data-toggle-owner-legacy { flex-basis: 100%; font-style: italic; }
+.data-toggle-owner-status { flex-basis: 100%; color: var(--status-warn); }
+.data-toggle-owner-error { flex-basis: 100%; color: var(--status-bad, #ff8a80); }
+
+.owner-dialog {
+  position: fixed; top: 72px; left: 50%; transform: translateX(-50%); z-index: 10050;
+  box-sizing: border-box; width: min(340px, calc(100vw - 32px)); max-height: calc(100vh - 160px); overflow: auto;
+  padding: 14px 16px; background: #0f1828; color: var(--text-primary);
+  border: 1px solid var(--glass-border-hover); border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.owner-dialog-title { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+.owner-dialog-form { display: grid; gap: 8px; }
+.owner-dialog-label { font-size: 12px; color: var(--text-secondary); }
+.owner-dialog-input {
+  box-sizing: border-box; width: 100%; min-height: 36px; padding: 6px 10px; font-size: 14px;
+  border: 1px solid var(--glass-border-hover); border-radius: 8px; color-scheme: dark; background: #111a2b; color: #e8eefb;
+}
+.owner-dialog-error { margin: 0; font-size: 12px; color: var(--status-bad, #ff8a80); }
+.owner-dialog-actions { display: flex; gap: 8px; margin-top: 4px; }
+.owner-dialog-btn {
+  flex: 1 1 0; min-height: 36px; padding: 6px 12px; border: 1px solid var(--glass-border-hover); border-radius: 8px;
+  background: transparent; color: var(--text-primary); font: inherit; cursor: pointer;
+}
+.owner-dialog-primary { border-color: var(--accent, #4fc3f7); color: var(--accent, #4fc3f7); }
+.owner-dialog-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.owner-dialog-btn:focus-visible,
+.owner-dialog-input:focus-visible { outline: 2px solid var(--accent, #4fc3f7); outline-offset: 2px; }
+@media (forced-colors: active) {
+  .owner-dialog { background: Canvas; color: CanvasText; border-color: CanvasText; }
+}
+@media (max-width: 767px) {
+  .data-toggle-owner { font-size: 13px; }
+  .data-toggle-owner-btn { min-height: 44px; padding: 8px 14px; }
+  .data-toggle-owner-region { min-height: 44px; }
+  .data-toggle-owner-check { width: 24px; height: 24px; }
+  .owner-dialog { top: 64px; max-height: calc(100vh - 150px); }
+  .owner-dialog-input { min-height: 44px; font-size: 16px; }
+  .owner-dialog-btn { min-height: 44px; }
+}
+
 /* ══ Readable native selects ═══════════════════════════════════════════════════════════
    A translucent select background makes Chrome paint the native option popup white, and
    the light option text then vanishes (white on white). Opt the controls into the dark

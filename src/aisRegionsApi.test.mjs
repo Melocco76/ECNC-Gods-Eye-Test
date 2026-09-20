@@ -317,9 +317,9 @@ test('/api/ais-live keeps every existing field and only ADDS coverage', () => {
   assert.deepEqual(Object.keys(aisCoverageSummary()).sort(), ['applying', 'desired', 'subscribed']);
 });
 
-test('the browser never carries region-write credentials, and the client layer does not write regions yet', () => {
+test('the browser layer never carries region-write credentials or names the regions endpoint (owner writes live in ownerCoverage.js)', () => {
   const layer = fs.readFileSync(new URL('./data/aisLiveVessels.js', import.meta.url), 'utf8');
-  assert.equal(layer.includes('ais-regions'), false, 'no UI/client writes in Phase A/B');
+  assert.equal(layer.includes('ais-regions'), false, 'the layer itself never writes; the owner controller does, via the session cookie');
   assert.equal(layer.includes('x-gev-admin-token'), false);
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   assert.equal(html.includes('ais-regions'), false);

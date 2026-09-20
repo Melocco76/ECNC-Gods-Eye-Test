@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { promises as fsp } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -58,6 +58,14 @@ import {
 import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
+import {
+  ADMIN_LOGIN_BODY_MAX_BYTES,
+  constantTimeEqual,
+  createAdminSessions,
+  originMatchesHost,
+  processAdminSession,
+  readCookie,
+} from './scripts/adminSession.mjs';
 import {
   AIS_REGION_LIMITS,
   boxesForRegions,
@@ -5179,47 +5187,55 @@ export function resetAisRegionsWriteLimiterForTest() {
 }
 const AIS_REGIONS_MAX_BODY_BYTES = 2048;
 
+// Owner sessions for the AIS coverage controls. PROCESS-LOCAL and in memory only
+// (see scripts/adminSession.mjs): valid solely while the service runs one instance.
+const _adminSessions = createAdminSessions();
+
+/** Test seam: drop every owner session and login-attempt record. */
+export function resetAdminSessionsForTest() {
+  _adminSessions.reset();
+}
+
+/** Test seam: the live session store (clock injection is done by tests through createAdminSessions). */
+export function adminSessionStoreForTest() {
+  return _adminSessions;
+}
+
+/** HTTP-free handler for /api/admin/session. */
+export function processAdminSessionRequest(request) {
+  return processAdminSession(_adminSessions, request);
+}
+
 /**
  * Authorization seam for region WRITES.
  *
- * There is no browser-safe owner authentication in this app: Provider Settings'
- * admission is loopback-only and is not installed under `vite preview` (the
- * production path). So writes require a server-configured shared secret sent in
- * a request header, and are refused outright when none is configured - the
- * default. The secret lives only in the server environment; no browser code
- * ever holds it.
+ * Two ways in, both needing the server-side secret `AIS_REGIONS_ADMIN_TOKEN` to
+ * be configured (writes are refused outright without it - the default):
+ *  1. an owner session cookie, issued by POST /api/admin/session after the owner
+ *     typed the secret once. This is the ONLY path the browser uses; the page
+ *     never holds the secret.
+ *  2. the secret itself in the `x-gev-admin-token` header, kept for CLI/admin
+ *     testing. No browser code sends it.
  *
  * @param {Record<string,string|string[]|undefined>} headers Lower-cased request headers.
  * @param {Record<string,string|undefined>} [env]
- * @returns {{ok: true} | {ok: false, status: number, error: string}}
+ * @returns {{ok: true, via: 'session'|'token'} | {ok: false, status: number, error: string}}
  */
 export function authorizeAisRegionsWrite(headers, env = process.env) {
   const expected = env.AIS_REGIONS_ADMIN_TOKEN;
   if (!expected) return { ok: false, status: 403, error: 'Region changes are not enabled on this server.' };
+  if (_adminSessions.validate(readCookie(headers))) return { ok: true, via: 'session' };
   const raw = headers?.['x-gev-admin-token'];
   const supplied = Array.isArray(raw) ? raw[0] : raw;
   if (typeof supplied !== 'string' || !supplied) return { ok: false, status: 401, error: 'Authorization required.' };
-  const a = createHash('sha256').update(supplied).digest();
-  const b = createHash('sha256').update(String(expected)).digest();
-  return timingSafeEqual(a, b) ? { ok: true } : { ok: false, status: 401, error: 'Authorization required.' };
-}
-
-/** Same-origin check for browser callers; non-browser callers send no Origin. */
-function originAllowed(headers) {
-  const origin = headers?.origin;
-  if (!origin) return true;
-  try {
-    return new URL(String(origin)).host === String(headers.host || '');
-  } catch {
-    return false;
-  }
+  return constantTimeEqual(supplied, expected) ? { ok: true, via: 'token' } : { ok: false, status: 401, error: 'Authorization required.' };
 }
 
 /**
  * Process one POST /api/ais-regions request. Pure of HTTP: returns
  * `{status, payload}` so the whole policy is testable without a server.
  *
- * Order: rate limit, authorization, origin, content type, size, mode, body, validation.
+ * Order: rate limit, authorization (owner session or admin token), origin, content type, size, mode, body, validation.
  *
  * @param {{headers: object, bodyText: string, clientKey: string}} request
  * @returns {{status: number, payload: object}}
@@ -5230,7 +5246,11 @@ export function processAisRegionsWrite({ headers = {}, bodyText = '', clientKey 
   }
   const auth = authorizeAisRegionsWrite(headers);
   if (!auth.ok) return { status: auth.status, payload: { error: auth.error } };
-  if (!originAllowed(headers)) return { status: 403, payload: { error: 'Cross-origin request refused.' } };
+  // A cookie is sent automatically by the browser, so a cookie-authorised write must
+  // prove it came from this site (Origin present and matching); SameSite=Strict is the second layer.
+  if (!originMatchesHost(headers, { required: auth.via === 'session' })) {
+    return { status: 403, payload: { error: 'Cross-origin request refused.' } };
+  }
   if (!/^application\/json\b/i.test(String(headers['content-type'] || ''))) {
     return { status: 415, payload: { error: 'Content-Type must be application/json.' } };
   }
@@ -5265,6 +5285,41 @@ export function processAisRegionsWrite({ headers = {}, bodyText = '', clientKey 
  */
 function aisLiveProxy() {
   function install(middlewares) {
+    middlewares.use('/api/admin/session', (req, res) => {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      const respond = (bodyText) => {
+        const result = processAdminSessionRequest({
+          method: req.method,
+          headers: req.headers,
+          bodyText,
+          clientKey: clientKey(req),
+        });
+        if (result.setCookie) res.setHeader('Set-Cookie', result.setCookie);
+        if (result.status === 405) res.setHeader('Allow', 'GET, POST, DELETE');
+        res.statusCode = result.status;
+        res.end(JSON.stringify(result.payload));
+      };
+      if (req.method !== 'POST') {
+        respond('');
+        return;
+      }
+      let body = '';
+      let overflowed = false;
+      req.on('data', (chunk) => {
+        if (overflowed) return;
+        body += chunk;
+        if (body.length > ADMIN_LOGIN_BODY_MAX_BYTES * 2) {
+          overflowed = true;
+          res.statusCode = 413;
+          res.end(JSON.stringify({ error: 'Request body too large.' }));
+          req.destroy();
+        }
+      });
+      req.on('end', () => {
+        if (!overflowed) respond(body);
+      });
+    });
     middlewares.use('/api/ais-regions', (req, res) => {
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.setHeader('Cache-Control', 'no-store');

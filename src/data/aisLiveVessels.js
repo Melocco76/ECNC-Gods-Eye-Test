@@ -45,6 +45,8 @@ import {
 } from './focusDeemphasis.js';
 import { requestWorldFocus } from '../worldFocus.js';
 import { buildAisCoverageModel, fetchAisRegionsStatus } from './aisCoverageStatus.js';
+import { createOwnerCoverage } from './ownerCoverage.js';
+import { openOwnerSignInDialog } from '../ownerSignInDialog.js';
 import { holdContinuousRender, releaseContinuousRender } from '../renderGovernor.js';
 
 const FOCUS_EVIDENCE_DEV = import.meta.env?.DEV === true;
@@ -349,6 +351,20 @@ function setCoverageModel(model) {
   }
 }
 
+/**
+ * Owner-only region controls. The row shows them only after the server confirms an
+ * owner session (HttpOnly cookie); public visitors see the read-only coverage.
+ */
+const _owner = createOwnerCoverage({ onChange: () => { try { _rowControlsListener?.(); } catch { /* never break the poll */ } } });
+const _ownerActions = {
+  signIn() {
+    const opener = globalThis.document?.activeElement || null;
+    openOwnerSignInDialog({ submit: (token) => _owner.signIn(token), opener });
+  },
+  signOut: () => _owner.signOut(),
+  toggle: (id, wantOn) => _owner.toggle(id, wantOn),
+};
+
 /** One GET when the layer turns on; live updates then ride the /api/ais-live coverage block. */
 async function loadRegionalCoverageStatus() {
   const status = await fetchAisRegionsStatus();
@@ -374,7 +390,7 @@ const aisLiveVesselsLayer = {
 
   /** Row descriptor for the data-layer panel: read-only regional coverage. */
   getRowControls() {
-    return _coverageModel ? { coverage: _coverageModel } : null;
+    return _coverageModel ? { coverage: _coverageModel, owner: { view: _owner.view(), actions: _ownerActions } } : null;
   },
 
   setRowControlsListener(listener) {
@@ -387,6 +403,7 @@ const aisLiveVesselsLayer = {
     if (!wasEnabled) {
       beginAisSession();
       void loadRegionalCoverageStatus();
+      void _owner.refreshSession();
     }
     holdContinuousRender('ais-vessels'); // per-frame animator (perf wave 2)
     const activeViewer = viewer || state.viewer;
@@ -932,6 +949,7 @@ function applyAisFeedSnapshot(viewer, payload) {
   // Additive `coverage` block; absent on older servers, empty in legacy mode.
   if (payload && typeof payload === 'object' && 'coverage' in payload) {
     setCoverageModel(buildAisCoverageModel(payload.coverage));
+    _owner.noteLiveCoverage(payload.coverage);
   }
   const snapshot = classifyAisFeedSnapshot(payload);
   state.loaded = true;
