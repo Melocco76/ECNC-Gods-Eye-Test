@@ -2546,6 +2546,7 @@ export class StyleManager {
           setScopeMaskEnabled(scopeEnabled);
           this._scopeBtn?.classList.toggle('active', scopeEnabled);
           this._scopeBtn?.setAttribute('aria-pressed', String(scopeEnabled));
+          document.getElementById('scope-slider-row')?.classList.toggle('visible', scopeEnabled);
         }
         if (typeof scopeFeatherPct === 'number' && this._scopeFeatherSlider) {
           const pct = Math.max(0, Math.min(100, Math.round(scopeFeatherPct)));
@@ -3401,6 +3402,7 @@ export class StyleManager {
       setScopeMaskEnabled(next);
       this._scopeBtn.classList.toggle('active', next);
       this._scopeBtn.setAttribute('aria-pressed', String(next));
+      document.getElementById('scope-slider-row')?.classList.toggle('visible', next);
       this._syncShareState();
     });
     this._scopeFeatherSlider?.addEventListener('input', () => {
@@ -6652,7 +6654,7 @@ export class StyleManager {
     }
 
     this._syncCctvSourceBadge(activeCamera, enabled);
-    this._typeCctvSummary(state?.summary || 'Enable CCTV to start camera-linked intelligence summaries.');
+    this._typeCctvSummary(state?.summary || 'Enable CCTV to start camera-linked summaries.');
   }
 
   /**
@@ -8689,6 +8691,7 @@ export class StyleManager {
       setScopeMaskEnabled(scopeState.enabled);
       this._scopeBtn?.classList.toggle('active', scopeState.enabled);
       this._scopeBtn?.setAttribute('aria-pressed', String(scopeState.enabled));
+      document.getElementById('scope-slider-row')?.classList.toggle('visible', scopeState.enabled);
     }
     if (typeof scopeState.featherPct === 'number' && this._scopeFeatherSlider) {
       const pct = Math.max(0, Math.min(100, Math.round(scopeState.featherPct)));

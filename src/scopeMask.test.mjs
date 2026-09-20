@@ -14,6 +14,7 @@ import {
   installScopeMask,
   destroyScopeMask,
   setScopeMaskEnabled,
+  isScopeMaskEnabled,
   setScopeMaskFeather,
   SCOPE_TERMINUS_MIN_PCT,
   SCOPE_TERMINUS_MAX_PCT,
@@ -28,6 +29,14 @@ import {
 import { KEYHOLE_OUTER_RADIUS } from './celestialRing.js';
 
 beforeEach(() => _resetScopeMaskForTest());
+
+test('the scope defaults OFF and can be turned on and off', () => {
+  assert.equal(isScopeMaskEnabled(), false, 'a fresh launch shows the full map');
+  setScopeMaskEnabled(true);
+  assert.equal(isScopeMaskEnabled(), true);
+  setScopeMaskEnabled(false);
+  assert.equal(isScopeMaskEnabled(), false);
+});
 
 test('geometry anchors the visible edge to the shared keyhole radius', () => {
   const geo = scopeMaskGeometry(1440, 860, 0.4);
@@ -161,6 +170,7 @@ function stubScopeMaskDom({ width = 1000, height = 800, dpr = 1 } = {}) {
 }
 
 test('a DPR change with no resize still repaints the backing store', () => {
+  setScopeMaskEnabled(true); // the scope now defaults OFF; these paths need it on
   const dom = stubScopeMaskDom({ width: 1000, height: 800, dpr: 1 });
   try {
     installScopeMask({ container: dom.container });
@@ -185,6 +195,7 @@ test('a DPR change with no resize still repaints the backing store', () => {
 });
 
 test('destroy tears the DPR watch down (no redraw after teardown)', () => {
+  setScopeMaskEnabled(true); // the scope now defaults OFF; these paths need it on
   const dom = stubScopeMaskDom({ width: 640, height: 480, dpr: 1 });
   try {
     installScopeMask({ container: dom.container });
@@ -335,6 +346,7 @@ test('an override pins the terminus and null restores the ramp', () => {
 });
 
 test('the hard-crop (feather 0) path honors the same terminus alpha', () => {
+  setScopeMaskEnabled(true); // the scope now defaults OFF; these paths need it on
   const dom = stubScopeMaskDom({ width: 1000, height: 800, dpr: 1 });
   try {
     installScopeMask({ container: dom.container });
@@ -391,6 +403,7 @@ function stubScopeViewer(container, heightM) {
 }
 
 test('a disabled scope does no canvas work and samples no camera heights', () => {
+  setScopeMaskEnabled(true); // the scope now defaults OFF; these paths need it on
   const dom = stubScopeMaskDom({ width: 1000, height: 800, dpr: 1 });
   const rig = stubScopeViewer(dom.container, 14_000_000); // true full-globe view
   try {
@@ -435,6 +448,7 @@ test('a disabled scope does no canvas work and samples no camera heights', () =>
 });
 
 test('a DPR change that also crosses a terminus step paints once, not twice', () => {
+  setScopeMaskEnabled(true); // the scope now defaults OFF; these paths need it on
   const dom = stubScopeMaskDom({ width: 1000, height: 800, dpr: 1 });
   const rig = stubScopeViewer(dom.container, SCOPE_TERMINUS_FAR_M);
   try {

@@ -695,3 +695,12 @@ test('destroy cancels only a still-owned share flight and ignores delayed comple
   newerManager.destroy();
   assert.equal(cancellations, 1, 'newer navigation must not be cancelled');
 });
+
+test('share-link scope restore: sc=1 ON, sc=0 OFF, missing sc OFF (the product default)', () => {
+  assert.equal(makeManager('#lat=10&lon=20&sc=1').parseInitialHash().scopeEnabled, true);
+  assert.equal(makeManager('#lat=10&lon=20&sc=0').parseInitialHash().scopeEnabled, false);
+  assert.equal(makeManager('#lat=10&lon=20').parseInitialHash().scopeEnabled, false);
+  // A fresh session generates sc=0 and an enabled one generates sc=1.
+  const manager = makeManager('');
+  assert.equal(manager._scopeEnabled, false);
+});

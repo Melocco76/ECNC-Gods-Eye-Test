@@ -26,6 +26,13 @@ import * as Cesium from 'cesium';
  * @type {{ key: string, html: string }[]}
  */
 export const DATA_CREDITS = [
+  // ── Project credit ──────────────────────────────────────────────
+  {
+    key: 'ecnc-god-eye',
+    html:
+      'ECNC God’s Eye — technology demonstration based on God’s Eye View by Bilawal Sidhu ' +
+      '(MIT licensed)',
+  },
   // ── Live sources ────────────────────────────────────────────────
   {
     key: 'opensky',

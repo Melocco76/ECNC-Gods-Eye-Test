@@ -1,5 +1,5 @@
 /**
- * The POWER UP surface — paste a key, get a power.
+ * The Data sources surface (formerly POWER UP) — paste a key, get a power.
  *
  * A small chip sits bottom-right whenever the app is running under the dev
  * server with keys still missing. It opens a dialog rendered ENTIRELY from
@@ -17,7 +17,7 @@
 /** Chip label — pure, exported for tests. */
 export function keySetupChipLabel(status) {
   const missing = Math.max(0, (status?.total || 0) - (status?.setCount || 0));
-  return missing > 0 ? `POWER UP · ${missing} ${missing === 1 ? 'KEY' : 'KEYS'} WAITING` : 'POWERED UP';
+  return missing > 0 ? `Data sources · ${missing} ${missing === 1 ? 'key' : 'keys'} waiting` : 'Data sources · all set';
 }
 
 /**

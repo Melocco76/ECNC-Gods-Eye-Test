@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>God's Eye View</title>
+  <title>ECNC God's Eye</title>
   <link rel="icon" type="image/svg+xml" href="/logo.svg" />
   <link rel="stylesheet" href="/style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -24,9 +24,10 @@
 
   <!-- Title -->
   <div id="title-bar">
-    <div class="title-glow"></div>
-    <h1><span class="title-logo brand-logo" data-logo-gaze data-logo-src="/logo.svg" aria-hidden="true"><img src="/logo.svg" alt="" /></span> <span>GOD'S EYE <span class="title-accent">VIEW</span></span></h1>
-    <p class="subtitle">NO PLACE LEFT BEHIND</p>
+    <!-- Brand slot: drop an ECNC logo <img> in here (or set data-logo-src) later.
+         Empty and collapsed until then; the eye mark below is the temporary secondary mark. -->
+    <h1><span id="ecnc-brand-slot" class="brand-slot" data-brand-slot></span><span class="title-logo brand-logo" data-logo-gaze data-logo-src="/logo.svg" aria-hidden="true"><img src="/logo.svg" alt="" /></span> <span>ECNC God's Eye</span></h1>
+    <p class="subtitle">Technology demonstration based on God's Eye View by Bilawal Sidhu</p>
   </div>
 
   <!-- Style indicator -->
@@ -388,15 +389,15 @@
       <button class="panel-collapse-btn pp-collapse-btn" data-collapse-target="pp-toggles" title="Collapse panel">&#x25C0;</button>
     </div>
     <div class="pp-toggle-group">
-      <button class="pp-toggle-btn" id="hud-toggle" title="Intelligence HUD (H)">
+      <button class="pp-toggle-btn" id="hud-toggle" title="Overlay (H)">
         <span class="pp-icon">&#x25CE;</span>
-        <span class="pp-label">HUD</span>
+        <span class="pp-label">Overlay</span>
       </button>
       <div class="pp-slider-row" id="hud-layout-row">
         <span class="pp-slider-mini-label">Layout</span>
-        <select id="hud-layout-select" class="pp-select" aria-label="HUD layout">
-          <option value="tactical">Tactical</option>
-          <option value="operator">Operator</option>
+        <select id="hud-layout-select" class="pp-select" aria-label="Overlay layout">
+          <option value="tactical">Detailed</option>
+          <option value="operator">Standard</option>
           <option value="minimal">Minimal</option>
         </select>
       </div>
@@ -456,11 +457,11 @@
       </div>
     </div>
     <div class="pp-toggle-group">
-      <button class="pp-toggle-btn active" id="scope-toggle" title="Scope — the circular viewport mask" aria-pressed="true">
+      <button class="pp-toggle-btn" id="scope-toggle" title="Scope — the circular viewport mask" aria-pressed="false">
         <span class="pp-icon material-symbols-outlined" aria-hidden="true">adjust</span>
         <span class="pp-label">Scope</span>
       </button>
-      <div class="pp-slider-row visible" id="scope-slider-row">
+      <div class="pp-slider-row" id="scope-slider-row">
         <span class="pp-slider-mini-label">Feather</span>
         <!-- Feather starts at an 11% soft scope-mask edge (owner final lock
              2026-08-24, superseding the 08-22 hard-crop and 08-23 8% rulings);
@@ -665,8 +666,8 @@
           <button id="cctv-calib-reset-btn" class="scene-btn">RESET CAL</button>
         </div>
       </div>
-      <div class="cctv-summary-label">SCENE SUMMARY</div>
-      <div id="cctv-summary">Enable CCTV to start camera-linked intelligence summaries.</div>
+      <div class="cctv-summary-label">Camera summary</div>
+      <div id="cctv-summary">Enable CCTV to start camera-linked summaries.</div>
     </div>
   </div>
 
@@ -756,12 +757,12 @@
           </button>
           <button id="global-context-missions-btn" class="context-mode-button" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="context-missions-view">
             <span class="material-symbols-outlined" aria-hidden="true">rocket_launch</span>
-            <span>SPACE MISSIONS</span>
+            <span>Space launches</span>
           </button>
         </div>
         <div id="context-mode-standby" class="context-mode-standby">
           <strong>SELECT CONTEXT</strong>
-          <span>CONTACTS — nearest planes · vessels · sites<br>SPACE MISSIONS — launches &amp; orbital assets</span>
+          <span>CONTACTS — nearest planes · vessels · sites<br>Space launches — launches &amp; orbital assets</span>
         </div>
         <section id="context-flights-view" class="context-mode-view" role="tabpanel" aria-labelledby="global-context-flights-btn" hidden>
           <div class="global-context-actions" aria-label="Contact Context actions">
@@ -861,25 +862,22 @@
        every session until "Don't show this again" is ticked — see
        src/firstRunExperience.js for the full show policy. -->
   <aside id="first-run-launcher" role="dialog" aria-labelledby="first-run-title" aria-describedby="first-run-description" hidden>
-    <div class="first-run-scanline" aria-hidden="true"></div>
-    <header class="first-run-header">
-      <span class="first-run-kicker">MISSION CONTROL · FIRST LAUNCH</span>
+        <header class="first-run-header">
+      <span class="first-run-kicker">Welcome</span>
     </header>
     <h2 id="first-run-title">Choose your first view</h2>
-    <!-- The card's one persuasive line, owner-authored and VERBATIM (2026-08-23)
-         — including the unspaced em dash. The arc it has to carry: this looks
-         like something you should not have access to → the sources are all
-         public → the data is real. Tile subcopy stays purely functional. -->
-    <p id="first-run-description">It feels like a forbidden cockpit—then you realize the sources are public and the data is real.</p>
+    <!-- The card's one line of framing copy (replaced 2026-09-19 with the
+         plain-language ECNC wording). Tile subcopy stays purely functional. -->
+    <p id="first-run-description">Live public data on a 3D globe.</p>
     <div class="first-run-choices">
       <button type="button" data-first-run-choice="contacts">
         <span class="material-symbols-outlined" aria-hidden="true">radar</span>
-        <span><strong>LIVE CONTACTS</strong><small>Aircraft, vessels and nearby intelligence</small></span>
+        <span><strong>Live tracking</strong><small>Aircraft, vessels and nearby places</small></span>
         <span class="material-symbols-outlined first-run-arrow" aria-hidden="true">arrow_forward</span>
       </button>
       <button type="button" data-first-run-choice="space-missions">
         <span class="material-symbols-outlined" aria-hidden="true">rocket_launch</span>
-        <span><strong>SPACE MISSIONS</strong><small>Launches, spacecraft and orbital context</small></span>
+        <span><strong>Space launches</strong><small>Launches, spacecraft and orbital context</small></span>
         <span class="material-symbols-outlined first-run-arrow" aria-hidden="true">arrow_forward</span>
       </button>
       <button type="button" data-first-run-choice="environmental">
@@ -909,18 +907,17 @@
     <p class="first-run-note" data-first-run-status role="status" aria-live="polite">Tip: the GEV MIC button in the dock lets you talk to the map.</p>
   </aside>
 
-  <!-- POWER UP — in-app key setup. Dev-server only: src/keySetup.js removes
+  <!-- Data sources — in-app key setup. Dev-server only: src/keySetup.js removes
        both the chip and this dialog outright when /api/setup/status is not
        there to answer (prod builds, LAN visitors). Rows are rendered from
        that payload, so the key registry lives in src/keySetupCore.mjs alone. -->
   <button id="key-setup-chip" type="button" hidden aria-haspopup="dialog" aria-controls="key-setup">
     <span class="material-symbols-outlined" aria-hidden="true">bolt</span>
-    <span data-key-setup-chip-label>POWER UP</span>
+    <span data-key-setup-chip-label>Data sources</span>
   </button>
   <aside id="key-setup" role="dialog" aria-labelledby="key-setup-title" aria-describedby="key-setup-description" hidden>
-    <div class="key-setup-scanline" aria-hidden="true"></div>
-    <header class="key-setup-header">
-      <span class="key-setup-kicker">GROUND STATION · PROVIDER SETTINGS</span>
+        <header class="key-setup-header">
+      <span class="key-setup-kicker">Provider settings</span>
       <button type="button" class="key-setup-close" data-key-setup-close aria-label="Close key setup">
         <span class="material-symbols-outlined" aria-hidden="true">close</span>
       </button>
@@ -935,16 +932,19 @@
     <p class="key-setup-note" data-key-setup-status role="status" aria-live="polite">The Google Maps key buys the photorealistic planet — everything else stacks on top.</p>
   </aside>
 
-  <!-- Intelligence HUD Overlay -->
+  <!-- Overlay (HUD) -->
   <div id="intel-hud"></div>
 
   <!-- Loading screen -->
   <div id="loading-screen">
     <div class="loader-content">
+      <span id="ecnc-loader-brand-slot" class="brand-slot loader-brand-slot" data-brand-slot></span>
       <span class="loader-logo brand-logo" data-logo-gaze data-logo-src="/logo.svg" aria-hidden="true"><img src="/logo.svg" alt="" /></span>
-      <h2>GOD'S EYE <span class="title-accent">VIEW</span></h2>
+      <h2>ECNC God's Eye</h2>
+      <p class="loader-tagline">Tech is Secondary; People are Primary.</p>
       <p class="loader-status">Initializing photorealistic world...</p>
     </div>
+    <p class="loader-credit">Based on God's Eye View by Bilawal Sidhu</p>
   </div>
 
   <script type="module" src="/src/main.js"></script>

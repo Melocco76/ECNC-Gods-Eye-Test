@@ -1,7 +1,7 @@
 /**
  * @module hudLocality
- * @description The locality half of the HUD summary line — either "NEAR <landmark>"
- * or the "SECTOR <lat/lon>" fallback.
+ * @description The locality half of the HUD summary line — either "Near <landmark>"
+ * or the plain latitude/longitude fallback.
  *
  * Split out of `hud.js` purely so it is unit-testable: `hud.js` pulls in the `mgrs`
  * CommonJS package, which Vite resolves but plain Node cannot import by named export.
@@ -31,7 +31,7 @@ export const NEAR_POI_MAX_KM = 150;
  * @returns {string}
  */
 function coordinateTag(value, positive, negative) {
-  return `${Math.abs(value).toFixed(2)}${value >= 0 ? positive : negative}`;
+  return `${Math.abs(value).toFixed(2)}°${value >= 0 ? positive : negative}`;
 }
 
 /**
@@ -42,13 +42,13 @@ function coordinateTag(value, positive, negative) {
  *   catalogue is empty.
  * @param {number} latDeg Camera latitude in decimal degrees.
  * @param {number} lonDeg Camera longitude in decimal degrees.
- * @returns {string} `NEAR <POI> (<CITY>) <N>KM` within the bound (inclusive),
- *   otherwise `SECTOR <lat> <lon>`.
+ * @returns {string} `Near <POI> (<City>) <N> km` within the bound (inclusive),
+ *   otherwise the plain coordinates (`36.10°N 80.24°W`).
  */
 export function composeLocalityTag(nearest, latDeg, lonDeg) {
   const distKm = Number(nearest?.distKm);
   if (nearest && Number.isFinite(distKm) && distKm <= NEAR_POI_MAX_KM) {
-    return `NEAR ${String(nearest.poi).toUpperCase()} (${String(nearest.city).toUpperCase()}) ${Math.round(distKm)}KM`;
+    return `Near ${String(nearest.poi)} (${String(nearest.city)}) ${Math.round(distKm)} km`;
   }
-  return `SECTOR ${coordinateTag(latDeg, 'N', 'S')} ${coordinateTag(lonDeg, 'E', 'W')}`;
+  return `${coordinateTag(latDeg, 'N', 'S')} ${coordinateTag(lonDeg, 'E', 'W')}`;
 }
