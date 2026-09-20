@@ -10079,3 +10079,171 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
 /* Map source chips wrap inside the drawer instead of squeezing into one line. */
 #layer-drawer #map-stack-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 #layer-drawer #map-stack-chips .map-stack-chip { flex: 1 1 calc(50% - 6px); min-height: 40px; white-space: normal; font-size: 13px; }
+
+/* ══ ECNC God's Eye - Phase 3: phones (max-width: 767px) ═════════════════════
+   Desktop is untouched: everything below the desktop defaults is inside the
+   phone media query. The Layers drawer becomes a bottom sheet (same nodes, same
+   handlers), the header shrinks to 48px, panels take turns, and the dock's
+   place shortcuts and search move into the header/sheet. */
+
+#mobile-search-btn,
+#mobile-search-panel,
+#drawer-places { display: none; }
+
+.drawer-places h4 { margin: 10px 0 6px; font: 600 13px/1.2 var(--font-sans); color: var(--text-secondary); }
+
+@media (max-width: 767px) {
+  /* -- Header: 48px, brand left, Search / Layers / About right ---------------- */
+  #app-header { --app-header-height: 48px; height: 48px; padding: 0 4px 0 8px; gap: 4px; }
+  #app-header #title-bar { flex: 1 1 auto; min-width: 0; }
+  #app-header #title-bar h1 { font-size: 15px; gap: 6px; min-width: 0; }
+  #app-header #title-bar h1 > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #app-header #title-bar .title-logo { width: 28px; flex: 0 0 auto; }
+  #app-header #title-bar .subtitle,
+  #app-header-center,
+  #app-header-clock,
+  #look-btn { display: none; }
+  #app-header-actions { gap: 0; flex: 0 0 auto; }
+  .app-header-btn { width: 44px; height: 44px; padding: 0; justify-content: center; border-radius: 10px; background: none; border-color: transparent; }
+  .app-header-btn .material-symbols-outlined { font-size: 24px; }
+  #mobile-search-btn { display: inline-flex; }
+
+  /* -- Search: a compact panel under the header --------------------------------- */
+  #mobile-search-panel {
+    display: block;
+    position: fixed;
+    top: 48px; left: 0; right: 0;
+    z-index: 129;
+    box-sizing: border-box;
+    padding: 8px;
+    background: var(--glass-bg);
+    border-bottom: 1px solid var(--glass-border);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+  #mobile-search-panel[hidden] { display: none; }
+  #mobile-search-panel .location-search-wrap { position: static; display: flex; width: 100%; gap: 8px; }
+  #mobile-search-panel #location-search {
+    flex: 1 1 auto; width: auto; min-width: 0; height: 44px; padding: 0 12px;
+    opacity: 1; font-size: 16px; border-radius: 10px;
+  }
+  #mobile-search-panel #search-toggle { display: none; }
+
+  /* -- Layers: bottom sheet ------------------------------------------------------ */
+  #layer-drawer {
+    top: auto; left: 0; right: 0; bottom: 72px;
+    width: 100%;
+    max-height: min(50vh, calc(100dvh - 48px - 72px - 16px));
+    border-radius: 16px 16px 0 0;
+    border-bottom: 0;
+    opacity: 1;
+    transform: translateY(100%);
+    transition: transform var(--transition-smooth);
+  }
+  #layer-drawer.open { transform: none; }
+  @media (prefers-reduced-motion: reduce) { #layer-drawer { transition: none; } }
+  .drawer-head { padding: 4px 4px 4px 16px; }
+  .drawer-close { width: 44px; height: 44px; }
+  .drawer-scroll { padding-bottom: 8px; }
+  .drawer-group-toggle { min-height: 48px; font-size: 15px; }
+  .drawer-group-count { font-size: 13px; }
+
+  /* While the sheet is open the transient panels and dock step aside (state untouched). */
+  body.mobile-sheet-open :is(#cctv-panel, #scene-panel, #global-context-panel, #map-weather-card,
+    #command-dock, #key-setup-chip) { visibility: hidden; pointer-events: none; }
+
+  /* -- Utility panels: one at a time, as a card above the credit line ------------ */
+  #left-panel-stack, #right-context-rail {
+    position: fixed !important;
+    top: auto !important; left: 8px !important; right: 8px !important; bottom: 72px !important;
+    width: auto !important;
+    max-height: min(50vh, calc(100dvh - 48px - 72px - 16px)) !important;
+    overflow-y: auto;
+    align-items: stretch;
+    pointer-events: none;
+  }
+  #left-panel-stack > *, #right-context-rail > * { width: 100% !important; max-width: none; pointer-events: auto; margin: 0; }
+  /* Collapsed launchers are replaced by the Tools buttons in the sheet. */
+  #cctv-panel.collapsed, #scene-panel.collapsed, #global-context-panel.collapsed { display: none !important; }
+  .panel-collapse-btn { min-width: 44px; min-height: 44px; }
+
+  /* -- Weather card ---------------------------------------------------------------- */
+  #map-weather-card {
+    top: 56px; left: 8px; right: 8px; width: auto; transform: none;
+    padding: 10px 12px;
+    font-size: 13px;
+    background: rgba(11, 18, 32, 0.94);
+    border-color: var(--glass-border);
+  }
+  .map-weather-close { width: 44px; height: 44px; font-size: 26px; margin: -10px -10px 0 0; }
+  .map-weather-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  /* -- Dock: only the voice control remains, bottom-right above the credit line ---- */
+  #command-dock {
+    left: auto; right: 8px; bottom: 72px;
+    width: 172px; max-width: calc(100vw - 16px); min-height: 0;
+    padding: 0; background: none; border: 0; box-shadow: none;
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+    transform: none;
+  }
+  #command-dock > #location-bar { display: none !important; }
+  #command-dock > #gev-voice-control { margin: 0; }
+  #command-dock .gev-voice-kicker { display: none; }
+
+  /* -- Attribution: the very bottom line, never covered ----------------------------- */
+  /* One flat anchor for the credit on phones, including the minimal-HUD variant that would
+     otherwise win on specificity. Everything else stacks above it (72px inset). */
+  body:not(.ui-clean-view):not(.recording-mode) #cesium-credits,
+  body:not(.ui-clean-view):not(.recording-mode):has(#intel-hud[data-variant='minimal'].active) #cesium-credits { left: 8px; bottom: 6px; max-width: calc(100vw - 16px); }
+  #key-setup-chip { top: 56px; bottom: auto; right: 8px; left: auto; width: 44px; height: 44px; padding: 0; justify-content: center; }
+  #key-setup-chip [data-key-setup-chip-label] {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+
+  /* -- Transient loading chips: above the HUD, never over a utility card ------------ */
+  #global-loading-status, #traffic-sync-chip, #cctv-sync-chip {
+    top: auto !important; bottom: 132px !important; left: 8px !important; right: auto !important; transform: none !important;
+    max-width: calc(100vw - 16px);
+  }
+
+  /* -- HUD: coordinates only, tucked above the credit line ----------------------- */
+  #intel-hud .hud-top-left, #intel-hud .hud-top-right, #intel-hud .hud-bottom-right { display: none !important; }
+  #command-dock .gev-voice-visualizer, #command-dock .gev-voice-readout { display: none; }
+  #command-dock #gev-voice-control { display: flex !important; flex-direction: row; align-items: center; gap: 12px; flex: 1 1 auto !important; width: 100% !important; max-width: none; min-width: 0; box-sizing: border-box; padding: 6px 10px; }
+  #command-dock .gev-voice-heading { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
+  #command-dock .gev-voice-cost { max-height: none; flex-wrap: nowrap; }
+  #command-dock #gev-voice-button { width: 56px; height: 48px; flex: 0 0 auto; }
+  #intel-hud .hud-bottom-left { left: 8px !important; bottom: 72px !important; max-width: calc(100vw - 196px) !important; }
+  #intel-hud .hud-bottom-left .hud-content { padding: 4px 6px; }
+
+  /* -- Touch targets (~44px) --------------------------------------------------------- */
+  .data-toggle-btn { min-width: 56px; min-height: 44px; }
+  .data-toggle-chip { min-height: 44px; }
+  .data-toggle-slider-input, #pp-toggles input[type='range'] { min-height: 44px; }
+  #layer-drawer #map-stack-chips .map-stack-chip { min-height: 44px; }
+  #layer-drawer #style-buttons .style-btn { min-height: 44px; }
+  #pp-toggles .pp-toggle-btn { min-height: 44px; }
+  #pp-toggles .pp-mode-btn { min-height: 44px; }
+  #pp-toggles .pp-select { height: 44px; font-size: 16px; }
+  .drawer-tool-btn, #layer-drawer #top-center-actions button, #layer-drawer .drawer-inline-tool { min-height: 44px; }
+  .scene-btn, .cctv-cal-value, #cctv-panel button, #scene-panel button,
+  #global-context-panel button { min-height: 44px; }
+  #cctv-camera-select, #scene-select, #cctv-panel select, #scene-panel select { min-height: 44px; font-size: 16px; }
+  #gev-voice-button { min-height: 44px; }
+  #layer-drawer input, #layer-drawer select, #cctv-panel input, #scene-panel input,
+  #global-context-panel input, #global-context-panel select { font-size: 16px; }
+
+  /* -- Read-only AIS coverage stays compact on a phone -------------------------------- */
+  .data-toggle-coverage { font-size: 13px; }
+  .data-toggle-coverage-list { gap: 2px 8px; }
+}
+
+/* Very narrow phones. */
+@media (max-width: 359px) {
+  /* The credit line may wrap onto a second line at 320px rather than be cut off. */
+  body:not(.ui-clean-view):not(.recording-mode) #cesium-credits,
+  body:not(.ui-clean-view):not(.recording-mode):has(#intel-hud[data-variant='minimal'].active) #cesium-credits { white-space: normal; }
+  #app-header #title-bar h1 { font-size: 14px; }
+  #app-header #title-bar .title-logo { width: 24px; }
+}

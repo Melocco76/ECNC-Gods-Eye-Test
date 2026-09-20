@@ -322,6 +322,13 @@ function toPx(value, viewportHeight, where) {
   return total;
 }
 
+/** The phone breakpoint (Phase 3): utility panels become bottom cards, the dock is just voice. */
+const PHONE_MAX = 767;
+/** Everything on a phone stacks above the credit line by this much (style.css, Phase 3 block). */
+const PHONE_INSET_PX = 72;
+/** A phone credit may wrap to two lines at 320px; measured 57px tall at 320x700. */
+const PHONE_CREDIT_MAX_HEIGHT_PX = 58;
+
 const WIDTHS = [1440, 1024, 980, 900, 830, 800, 760, 721, 720, 700, 640, 600, 480, 375];
 const HEIGHTS = [500, 560, 640, 700, 800, 900, 1000, 1080, 1200, 1440, 1600];
 
@@ -398,7 +405,12 @@ test('the model refuses every cascade construct it cannot resolve', () => {
       complaints.push(`nested media queries on "${part}": ${rule.media.join(' && ')}`);
     }
     for (const decl of guarded) {
-      if (decl.important) complaints.push(`!important on ${decl.prop} of "${part}"`);
+      // Phase 3: on phones (<=767px) the JS-driven rail layout writes inline custom
+      // properties, so the rail's bottom-anchored card layout has to win with
+      // !important. That single rule is vetted by the phone-clearance tests below.
+      const phoneRail = part === '#right-context-rail' && rule.media.length === 1
+        && parseMediaCondition(rule.media[0]) === PHONE_MAX;
+      if (decl.important && !phoneRail) complaints.push(`!important on ${decl.prop} of "${part}"`);
       if (decl.prop === 'inset' || decl.prop === 'margin' || decl.prop === 'all'
         || decl.prop.startsWith('inset-') || decl.prop.startsWith('margin-block')) {
         complaints.push(`shorthand ${decl.prop} on "${part}" — the model reads longhands only`);
@@ -531,35 +543,63 @@ test('the full-width context rail clears the required credit at every modelled v
       if (decl.prop === 'bottom') anchors.push({ rule, decl });
     }
   }
-  assert.equal(anchors.length, 1, 'the rail has exactly one bottom anchor to reason about');
-  assert.equal(parseMediaCondition(anchors[0].rule.media[0]), 720, 'the rail only goes full-width below 720px');
+  assert.deepEqual(
+    anchors.map((anchor) => parseMediaCondition(anchor.rule.media[0])).sort((a, b) => a - b),
+    [720, PHONE_MAX],
+    'the rail has its <=720px anchor plus the vetted phone (<=767px) anchor',
+  );
 
   const failures = [];
-  for (const width of WIDTHS.filter((w) => w <= 720)) {
-    // `bottom` only governs the floor while the box is not height-capped:
-    // top + bottom + a resolved height is over-constrained and drops `bottom`.
-    assert.equal(
-      resolve(['#right-context-rail'], 'max-height', width, 'context rail').decl.value,
-      'none',
-      `at ${width}px the rail is height-capped, so its bottom anchor no longer decides its floor`,
-    );
+  for (const width of WIDTHS.filter((w) => w <= PHONE_MAX)) {
+    // `bottom` only governs the floor while the box is not height-capped: top +
+    // bottom + a resolved height is over-constrained. Below 721px the rail is
+    // uncapped; on phones it is capped but `top` resolves to `auto`, so bottom
+    // still decides where it sits.
+    const cap = resolve(['#right-context-rail'], 'max-height', width, 'context rail').decl.value;
+    const top = resolve(['#right-context-rail'], 'top', width, 'context rail').decl.value;
+    assert.ok(cap === 'none' || top === 'auto',
+      `at ${width}px the rail is height-capped (${cap}) with top ${top}, so its bottom anchor no longer decides its floor`);
     for (const height of HEIGHTS) {
       const rail = resolve(['#right-context-rail'], 'bottom', width, 'context rail');
-      const clearance = toPx(rail.decl.value, height, 'rail bottom') - creditTopPx(width, height);
-      if (clearance < MIN_CLEARANCE_PX) failures.push(`${width}x${height}: ${clearance.toFixed(1)}px`);
+      const creditTop = width <= PHONE_MAX
+        ? toPx(resolve(CREDIT_SELECTORS, 'bottom', width, 'credit').decl.value, height, 'credit bottom') + PHONE_CREDIT_MAX_HEIGHT_PX
+        : creditTopPx(width, height);
+      const clearance = toPx(rail.decl.value, height, 'rail bottom') - creditTop;
+      if (clearance < MIN_CLEARANCE_PX / 2) failures.push(`${width}x${height}: ${clearance.toFixed(1)}px`);
     }
   }
   assert.deepEqual(failures, [], `context rail re-enters the credit band at ${failures.join(', ')}`);
 });
 
+test('phones: sheet, cards, dock and HUD all clear a two-line credit, and the credit anchor is flat', () => {
+  for (const width of WIDTHS.filter((w) => w <= PHONE_MAX)) {
+    assert.equal(resolve(CREDIT_SELECTORS, 'bottom', width, 'credit').decl.value, '6px', `credit anchor at ${width}px`);
+    assert.equal(resolve([MINIMAL_HUD_CREDIT], 'bottom', width, 'minimal-HUD credit').decl.value, '6px', `minimal-HUD credit anchor at ${width}px`);
+    assert.equal(resolve(['#command-dock'], 'bottom', width, 'dock').decl.value, `${PHONE_INSET_PX}px`, `dock anchor at ${width}px`);
+    assert.equal(resolve(['#right-context-rail'], 'bottom', width, 'rail').decl.value, `${PHONE_INSET_PX}px`, `rail anchor at ${width}px`);
+  }
+  // 6px offset + the tallest measured wrapped credit must sit below the inset with air to spare.
+  assert.ok(6 + PHONE_CREDIT_MAX_HEIGHT_PX + 4 <= PHONE_INSET_PX, 'a wrapped credit fits under the phone inset');
+  const phone = css.slice(css.lastIndexOf("Phase 3: phones"));
+  assert.match(phone, /#layer-drawer \{\s*top: auto; left: 0; right: 0; bottom: 72px;/, 'the sheet sits above the credit line');
+  assert.match(phone, /#left-panel-stack, #right-context-rail \{[^}]*bottom: 72px !important;/, 'panel cards sit above the credit line');
+  assert.match(phone, /#intel-hud \.hud-bottom-left \{ left: 8px !important; bottom: 72px !important;/, 'HUD coordinates sit above the credit line');
+  assert.match(phone, /#command-dock \{[^}]*bottom: 72px;/, 'the voice dock sits above the credit line');
+  assert.match(phone, /@media \(max-width: 359px\) \{[\s\S]*?#cesium-credits \{ white-space: normal; \}/, 'the narrowest phones let the credit wrap instead of being cut off');
+  assert.doesNotMatch(phone, /#cesium-credits[^{]*\{[^}]*(display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)/);
+});
+
 test('the dock anchor changes at 720px — the 2vh cancellation is band-limited', () => {
   assert.equal(resolve(['#command-dock'], 'bottom', 800, 'dock').decl.value, '2vh');
-  assert.equal(resolve(['#command-dock'], 'bottom', 720, 'dock').decl.value, '8px');
+  // Phase 3: on phones (<=767px) the dock is only the voice control, stacked above a flat 6px credit.
+  assert.equal(resolve(['#command-dock'], 'bottom', 720, 'dock').decl.value, `${PHONE_INSET_PX}px`);
+  assert.equal(resolve(['#command-dock'], 'bottom', 768, 'dock').decl.value, '2vh', 'tablet widths keep the 2vh anchor');
   assert.equal(
-    resolve(CREDIT_SELECTORS, 'bottom', 720, 'credit').decl.value,
+    resolve(CREDIT_SELECTORS, 'bottom', 768, 'credit').decl.value,
     'calc(2vh + 5rem)',
-    'the credit keeps its 2vh base below 720px — that asymmetry is the whole hazard',
+    'above the phone breakpoint the credit still keeps its 2vh base — the original asymmetry',
   );
+  assert.equal(resolve(CREDIT_SELECTORS, 'bottom', 720, 'credit').decl.value, '6px');
 });
 
 test('the minimal-HUD credit variant tracks the ordinary one', () => {

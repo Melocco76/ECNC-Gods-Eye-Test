@@ -40,6 +40,9 @@
       <div id="app-header-search"></div>
     </div>
     <nav id="app-header-actions" aria-label="Main controls">
+      <button type="button" id="mobile-search-btn" class="app-header-btn" aria-expanded="false" aria-controls="mobile-search-panel" aria-label="Search places">
+        <span class="material-symbols-outlined" aria-hidden="true">search</span><span class="app-header-btn-label">Search</span>
+      </button>
       <button type="button" id="layers-btn" class="app-header-btn" aria-expanded="false" aria-controls="layer-drawer">
         <span class="material-symbols-outlined" aria-hidden="true">layers</span><span class="app-header-btn-label">Layers</span>
       </button>
@@ -52,6 +55,9 @@
       <span id="app-header-clock" title="UTC time"><span class="visually-hidden">UTC </span><span id="app-header-clock-value">--:--:--</span>Z</span>
     </nav>
   </header>
+
+  <!-- Phone search: the same search field (moved here at phone widths), opened from the header. -->
+  <div id="mobile-search-panel" role="search" aria-label="Search places" hidden></div>
 
   <!-- Layers drawer: accordion groups. The data rows are rendered into the group bodies by the
        DataLayerManager (ids and handlers unchanged); MAP / TOOLS / LOOK hold the moved controls. -->
@@ -154,6 +160,8 @@
             <button type="button" class="drawer-tool-btn" data-open-panel="cctv-panel"><span class="material-symbols-outlined" aria-hidden="true">videocam</span><span>CCTV camera panel</span></button>
             <button type="button" class="drawer-tool-btn" data-open-panel="global-context-panel"><span class="material-symbols-outlined" aria-hidden="true">radar</span><span>Context</span></button>
           </div>
+          <!-- Phone only: the dock's place shortcuts are moved here by src/layerDrawer.js. -->
+          <div id="drawer-places" class="drawer-places" hidden><h4>Places</h4></div>
         </div>
       </section>
       <section class="drawer-group" data-drawer-group="look">

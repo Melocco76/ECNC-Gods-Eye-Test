@@ -36,6 +36,27 @@ export function openOnlyGroup(drawer, groupId) {
   }
 }
 
+/**
+ * Single-primary-panel rule (phones). Given which utility panels are open now
+ * and which were open before, return the ones that must be closed: when a panel
+ * has just opened, every other open panel closes; otherwise nothing changes.
+ * The most recently opened panel wins; ties keep the last in list order.
+ *
+ * @param {string[]} openNow Ids open now, in priority order.
+ * @param {Set<string>|string[]} openBefore Ids open at the previous check.
+ * @returns {string[]} ids to close
+ */
+export function panelsToClose(openNow, openBefore) {
+  const before = new Set(openBefore);
+  const opened = openNow.filter((id) => !before.has(id));
+  if (!opened.length) return [];
+  const keep = opened[opened.length - 1];
+  return openNow.filter((id) => id !== keep);
+}
+
+/** Phone breakpoint shared with the CSS (`max-width: 767px`). */
+export const MOBILE_QUERY = '(max-width: 767px)';
+
 /** Format `HH:MM:SS` in UTC. */
 export function formatUtcClock(date) {
   return date.toISOString().slice(11, 19);
@@ -67,6 +88,8 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
   };
 
   let openerButton = null;
+  const mobileMq = win.matchMedia ? win.matchMedia(MOBILE_QUERY) : null;
+  const isMobile = () => Boolean(mobileMq?.matches);
 
   // -- Display panel: reparented into LOOK -------------------------------
   // ui.js prepends #pp-toggles into the right rail during its own init, so this
@@ -101,17 +124,23 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
   const syncExpanded = (open = !drawer.hidden) => {
     layersBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     lookBtn?.setAttribute('aria-expanded', open && lookOpen() ? 'true' : 'false');
+    // Phones: the drawer is a bottom sheet; this lets CSS tuck the utility
+    // panels and dock out of its way without changing any of their state.
+    doc.body?.classList.toggle('mobile-sheet-open', open && isMobile());
   };
 
   const isOpen = () => !drawer.hidden;
 
   function open(groupId = null, opener = layersBtn) {
+    closeSearch({ restoreFocus: false });
     openerButton = opener;
     if (groupId) openOnlyGroup(drawer, groupId);
     drawer.hidden = false;
     syncExpanded(true);
-    win.requestAnimationFrame?.(() => drawer.classList.add('open'));
-    if (!win.requestAnimationFrame) drawer.classList.add('open');
+    // Force a style flush so the slide-in transition runs, without waiting on a
+    // frame (rAF is paused in a background tab and the sheet must still open).
+    void drawer.offsetHeight;
+    drawer.classList.add('open');
   }
 
   function close({ restoreFocus = true } = {}) {
@@ -133,6 +162,11 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
     if (event.key !== 'Escape' || event.defaultPrevented) return;
     if (about && !about.hidden) {
       closeAbout();
+      return;
+    }
+    if (searchPanel && !searchPanel.hidden) {
+      event.preventDefault();
+      closeSearch();
       return;
     }
     if (isOpen()) {
@@ -184,6 +218,10 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
     }
     if (event.target.closest?.('[data-drawer-focus-search]')) {
       close({ restoreFocus: false });
+      if (isMobile()) {
+        openSearch();
+        return;
+      }
       const search = doc.getElementById('location-search');
       if (search) {
         search.classList.add('expanded');
@@ -192,23 +230,103 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
     }
   });
 
-  // -- Header search (desktop only; mobile keeps the dock search) ----------
+  // -- Search: header slot on desktop, header-button panel on phones ----------
+  // The SAME search field (and its ui.js listeners) moves between the two hosts;
+  // nothing about geocoding changes.
   const searchSlot = doc.getElementById('app-header-search');
+  const searchPanel = doc.getElementById('mobile-search-panel');
+  const searchBtn = doc.getElementById('mobile-search-btn');
   const searchWrap = doc.querySelector('.location-search-wrap');
-  const dockSearchParent = searchWrap?.parentElement || null;
-  const dockSearchNext = searchWrap?.nextSibling || null;
-  const mq = win.matchMedia ? win.matchMedia('(min-width: 768px)') : null;
   const placeSearch = () => {
-    if (!searchSlot || !searchWrap) return;
-    if (!mq || mq.matches) {
-      if (searchWrap.parentElement !== searchSlot) searchSlot.appendChild(searchWrap);
-      doc.getElementById('location-search')?.classList.add('expanded');
-    } else if (dockSearchParent && searchWrap.parentElement !== dockSearchParent) {
-      dockSearchParent.insertBefore(searchWrap, dockSearchNext);
+    if (!searchWrap) return;
+    const host = isMobile() ? searchPanel : searchSlot;
+    if (host && searchWrap.parentElement !== host) host.appendChild(searchWrap);
+    doc.getElementById('location-search')?.classList.add('expanded');
+    if (!isMobile() && searchPanel) searchPanel.hidden = true;
+    syncExpanded();
+  };
+
+  function openSearch() {
+    if (!searchPanel || !isMobile()) return;
+    close({ restoreFocus: false });
+    searchPanel.hidden = false;
+    searchBtn?.setAttribute('aria-expanded', 'true');
+    doc.getElementById('location-search')?.focus?.();
+  }
+
+  function closeSearch({ restoreFocus = true } = {}) {
+    if (!searchPanel || searchPanel.hidden) return;
+    searchPanel.hidden = true;
+    searchBtn?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) searchBtn?.focus?.();
+  }
+
+  listen(searchBtn, 'click', () => (searchPanel?.hidden === false ? closeSearch() : openSearch()));
+  // A submitted search flies the camera; get the panel out of the way of the map.
+  listen(doc.getElementById('location-search'), 'keydown', (event) => {
+    if (event.key === 'Enter' && isMobile()) win.setTimeout(() => closeSearch({ restoreFocus: false }), 400);
+  });
+
+  // -- Phone: the dock's place shortcuts live in Tools > Places ----------------------
+  const placesHost = doc.getElementById('drawer-places');
+  const poiRow = doc.getElementById('poi-row');
+  const poiDivider = doc.getElementById('location-bar-divider');
+  const pills = doc.getElementById('location-pills');
+  const poiParent = poiRow?.parentElement || null;
+  const cityRow = pills?.parentElement || null;
+  const placePlaces = () => {
+    if (!placesHost || !poiRow || !pills) return;
+    if (isMobile()) {
+      placesHost.append(...[poiRow, poiDivider, pills].filter(Boolean));
+      placesHost.hidden = false;
+    } else if (poiParent && cityRow) {
+      poiParent.insertBefore(poiRow, cityRow);
+      if (poiDivider) poiParent.insertBefore(poiDivider, cityRow);
+      cityRow.prepend(pills);
+      placesHost.hidden = true;
     }
   };
+
+  // -- Phone: one primary utility panel at a time -----------------------------------------
+  const PANELS = [
+    { id: 'cctv-panel', open: (el) => !el.classList.contains('collapsed'), close: (el) => el.querySelector('[data-collapse-target]')?.click() },
+    { id: 'scene-panel', open: (el) => !el.classList.contains('collapsed'), close: (el) => el.querySelector('[data-collapse-target]')?.click() },
+    { id: 'global-context-panel', open: (el) => !el.classList.contains('collapsed'), close: (el) => el.querySelector('[data-collapse-target]')?.click() },
+    { id: 'map-weather-card', open: (el) => !el.hidden, close: (el) => el.querySelector('[data-map-weather-close]')?.click() },
+  ].map((spec) => ({ ...spec, el: doc.getElementById(spec.id) })).filter((spec) => spec.el);
+  let previouslyOpen = new Set();
+  const enforceSinglePanel = () => {
+    const openNow = PANELS.filter((spec) => spec.open(spec.el));
+    if (isMobile()) {
+      const closing = panelsToClose(openNow.map((spec) => spec.id), previouslyOpen);
+      for (const id of closing) {
+        const spec = PANELS.find((entry) => entry.id === id);
+        spec?.close(spec.el);
+      }
+    }
+    previouslyOpen = new Set(PANELS.filter((spec) => spec.open(spec.el)).map((spec) => spec.id));
+  };
+  if (typeof win.MutationObserver === 'function') {
+    const panelObserver = new win.MutationObserver(enforceSinglePanel);
+    for (const spec of PANELS) panelObserver.observe(spec.el, { attributes: true, attributeFilter: ['class', 'hidden'] });
+    cleanups.push(() => panelObserver.disconnect());
+  }
+  enforceSinglePanel();
+
+  // The weather card is a map overlay: after asking for it, get the sheet out of the way.
+  listen(weatherToggle, 'click', () => {
+    if (isMobile() && isOpen()) win.setTimeout(() => close({ restoreFocus: false }), 0);
+  });
+
   placeSearch();
-  if (mq?.addEventListener) listen(mq, 'change', placeSearch);
+  placePlaces();
+  const onBreakpoint = () => {
+    placeSearch();
+    placePlaces();
+    enforceSinglePanel();
+    syncExpanded();
+  };
+  if (mobileMq?.addEventListener) listen(mobileMq, 'change', onBreakpoint);
 
   // -- Header status: map mode + altitude -----------------------------------
   const modeEl = doc.getElementById('app-header-map-mode');
@@ -292,6 +410,8 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
     isOpen,
     openAbout,
     closeAbout,
+    openSearch,
+    closeSearch,
     destroy() {
       for (const fn of cleanups.splice(0)) fn();
     },
