@@ -2635,6 +2635,43 @@ function terrainHeightsProxy() {
 }
 
 /**
+ * Normalise one adsbdb `/v0/aircraft/{hex}` response. Pure, and the ONLY place
+ * the aircraft body is read: the same single upstream call now also keeps the
+ * airframe metadata the provider already returns (nothing new is requested).
+ *
+ * The first three fields are the original contract and are unchanged. The rest
+ * are additive, each `null` when the provider omits it - nothing is inferred:
+ *  - manufacturer          <- `manufacturer`
+ *  - registeredOwner       <- `registered_owner`
+ *  - registeredOwnerCountry<- `registered_owner_country_name`
+ *  - operatorFlagCode      <- `registered_owner_operator_flag_code`
+ * "Registered owner" is the registry's owner of record. It is NOT necessarily
+ * the airline operating a given flight, and it is never used as one.
+ *
+ * @param {unknown} json Parsed adsbdb response body.
+ * @returns {{typeCode: string|null, typeName: string|null, registration: string|null,
+ *   manufacturer: string|null, registeredOwner: string|null,
+ *   registeredOwnerCountry: string|null, operatorFlagCode: string|null}|null}
+ */
+export function parseAdsbdbAircraft(json) {
+  const a = json?.response?.aircraft;
+  if (!a) return null;
+  const text = (value) => {
+    const cleaned = typeof value === 'string' ? value.trim() : '';
+    return cleaned || null;
+  };
+  return {
+    typeCode: a.icao_type || null, // ICAO designator, e.g. "B738" — feeds classifyAircraft
+    typeName: a.manufacturer && a.type ? `${a.manufacturer} ${a.type}` : (a.type || null),
+    registration: a.registration || null,
+    manufacturer: text(a.manufacturer),
+    registeredOwner: text(a.registered_owner),
+    registeredOwnerCountry: text(a.registered_owner_country_name),
+    operatorFlagCode: text(a.registered_owner_operator_flag_code),
+  };
+}
+
+/**
  * adsbdb.com enrichment proxy: callsign → route (airline + origin/destination
  * airports) and hex → aircraft type/registration. Free community API — cached
  * aggressively: ONE upstream request per new key ever (404s negative-cached),
@@ -2680,15 +2717,7 @@ function adsbdbProxy() {
     return { airline: fr.airline?.name || null, origin: airport(fr.origin), destination: airport(fr.destination) };
   }
 
-  function parseAircraft(json) {
-    const a = json?.response?.aircraft;
-    if (!a) return null;
-    return {
-      typeCode: a.icao_type || null, // ICAO designator, e.g. "B738" — feeds classifyAircraft
-      typeName: a.manufacturer && a.type ? `${a.manufacturer} ${a.type}` : (a.type || null),
-      registration: a.registration || null,
-    };
-  }
+  const parseAircraft = parseAdsbdbAircraft;
 
   function lookup(kind, key) {
     const store = kind === 'route' ? cache.routes : cache.aircraft;

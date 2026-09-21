@@ -820,27 +820,42 @@ function _drainEnrich() {
   }
 }
 
+/**
+ * Apply one adsbdb aircraft answer to the contact's metadata. Airframe facts
+ * (type, registration, manufacturer, registered owner...) do not change, so a
+ * later answer that lacks a field never erases an earlier one, while a value that
+ * DOES arrive always wins. Rapidly changing fields never pass through here.
+ * @param {string} icao24
+ * @param {object} data `/api/adsbdb/type/{hex}` body (`found: true`).
+ */
+function _applyTypeEnrichment(icao24, data) {
+  const meta = _flightData.get(icao24);
+  if (!meta) return; // evicted while the lookup was in flight
+  meta.typeCode = data.typeCode || meta.typeCode;
+  meta.typeName = data.typeName || meta.typeName;
+  meta.registration = data.registration || meta.registration;
+  // Additive airframe metadata (same single lookup; absent on older cached answers).
+  meta.manufacturer = data.manufacturer || meta.manufacturer || null;
+  meta.registeredOwner = data.registeredOwner || meta.registeredOwner || null;
+  meta.registeredOwnerCountry = data.registeredOwnerCountry || meta.registeredOwnerCountry || null;
+  meta.operatorFlagCode = data.operatorFlagCode || meta.operatorFlagCode || null;
+  if (meta.typeCode) {
+    const klass = classifyAircraft({ typeCode: meta.typeCode, category: meta.category });
+    if (klass !== meta.klass) {
+      meta.klass = klass;
+      const bb = _billboards.get(icao24);
+      if (bb) _applyFleetBillboardPresentation(icao24, bb);
+      // Hangar fleet: the class's GLB/scale may have changed — resync the
+      // live model, any in-flight load, and the tracked standalone model.
+      _syncModelToClass(icao24);
+    }
+  }
+  if (icao24 === _trackedIcao && _trackedEntity) _updateTrackedLabelModel(icao24);
+}
+
 function _requestTypeEnrichment(icao24, priority = false) {
   if (!/^[0-9a-f]{6}$/i.test(icao24)) return;
-  _enqueueEnrich(`t:${icao24}`, `/api/adsbdb/type/${icao24.toLowerCase()}`, (data) => {
-    const meta = _flightData.get(icao24);
-    if (!meta) return; // evicted while the lookup was in flight
-    meta.typeCode = data.typeCode || meta.typeCode;
-    meta.typeName = data.typeName || meta.typeName;
-    meta.registration = data.registration || meta.registration;
-    if (meta.typeCode) {
-      const klass = classifyAircraft({ typeCode: meta.typeCode, category: meta.category });
-      if (klass !== meta.klass) {
-        meta.klass = klass;
-        const bb = _billboards.get(icao24);
-        if (bb) _applyFleetBillboardPresentation(icao24, bb);
-        // Hangar fleet: the class's GLB/scale may have changed — resync the
-        // live model, any in-flight load, and the tracked standalone model.
-        _syncModelToClass(icao24);
-      }
-    }
-    if (icao24 === _trackedIcao && _trackedEntity) _updateTrackedLabelModel(icao24);
-  }, priority);
+  _enqueueEnrich(`t:${icao24}`, `/api/adsbdb/type/${icao24.toLowerCase()}`, (data) => _applyTypeEnrichment(icao24, data), priority);
 }
 
 function _requestRouteEnrichment(icao24) {
@@ -2919,6 +2934,13 @@ function _describeFlight(icao24) {
     squawk: info?.squawk ?? null,
     klass: info?.klass ?? null,
     originCountry: info?.originCountry ?? null,
+    // Airframe metadata for the details panel. Manufacturer is a TYPE fact, so a
+    // TR-3B-converted contact drops it like typeName/typeCode; the registry
+    // owner fields are identity (like registration) and stay as reported.
+    manufacturer: isTr3b(icao24) ? null : (_toCleanText(info?.manufacturer) || null),
+    registeredOwner: _toCleanText(info?.registeredOwner) || null,
+    registeredOwnerCountry: _toCleanText(info?.registeredOwnerCountry) || null,
+    operatorFlagCode: _toCleanText(info?.operatorFlagCode) || null,
     lastContactEpochMs: Number.isFinite(info?.lastContactEpochMs) ? info.lastContactEpochMs : null,
     airline: info?.airline ?? null,
     // CLASS label follows the TR-3B conversion so every downstream card
@@ -3449,6 +3471,11 @@ export function _setFlightTrackingRefreshOutcomeForTest({
 export function _setFlightFeedSourceForTest({ source = 'OpenSky Network', coverage = 'worldwide upstream snapshot' } = {}) {
   _lastSource = source;
   _lastCoverage = coverage;
+}
+
+/** Test seam: apply an adsbdb aircraft answer exactly as the enrichment queue does. */
+export function _applyTypeEnrichmentForTest(icao24, data) {
+  _applyTypeEnrichment(icao24, data);
 }
 
 /** Test seam: the Context/voice descriptor for one contact. */
@@ -4420,6 +4447,11 @@ const flightsLayer = {
           typeCode: prevMeta?.typeCode ?? null,
           typeName: prevMeta?.typeName ?? null,
           registration: prevMeta?.registration ?? null,
+          // Static airframe metadata (adsbdb): sticky across polls like type/registration.
+          manufacturer: prevMeta?.manufacturer ?? null,
+          registeredOwner: prevMeta?.registeredOwner ?? null,
+          registeredOwnerCountry: prevMeta?.registeredOwnerCountry ?? null,
+          operatorFlagCode: prevMeta?.operatorFlagCode ?? null,
           airline: prevMeta?.airline ?? null,
           route: prevMeta?.route ?? null,
           // The RAW poll fix lat/lon (this tick's OpenSky state-vector

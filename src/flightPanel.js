@@ -195,10 +195,21 @@ export function buildFlightDetailsModel(d, { nowMs = Date.now() } = {}) {
   const typeCode = text(d.typeCode);
   const klass = text(d.klass);
   const showClass = klass && (typeCode || klass !== 'airliner'); // 'airliner' alone is only the default guess
+  const typeName = text(d.typeName);
+  const manufacturer = text(d.manufacturer);
+  // The provider usually folds the manufacturer into the type string ("Airbus A321 ...");
+  // a separate Manufacturer row would only repeat it.
+  const manufacturerRedundant = Boolean(manufacturer && typeName && typeName.toLowerCase().includes(manufacturer.toLowerCase()));
+  // Registry fields are labelled for what they are: the owner OF RECORD, which is not
+  // necessarily the airline flying this leg (that stays in the FLIGHT section).
   const aircraft = [
     ['registration', 'Registration', registration],
-    ['type', 'Type', text(d.typeName)],
+    ['manufacturer', 'Manufacturer', manufacturerRedundant ? null : manufacturer],
+    ['type', 'Type', typeName],
     ['typeCode', 'ICAO type', typeCode],
+    ['registeredOwner', 'Registered owner', text(d.registeredOwner)],
+    ['ownerCountry', 'Owner country', text(d.registeredOwnerCountry)],
+    ['operatorCode', 'Operator code', text(d.operatorFlagCode)],
     ['class', 'Class', showClass ? (CLASS_LABELS[klass] || klass) : null],
     ['icao24', 'ICAO24', text(d.icao24)?.toUpperCase()],
     ['country', 'Country (ICAO24 block)', text(d.originCountry)],
@@ -236,7 +247,8 @@ export function buildFlightDetailsModel(d, { nowMs = Date.now() } = {}) {
     if (duration) calc.push(['eta', 'Time remaining', `≈ ${duration}`, 'ESTIMATED']);
   }
 
-  const enrichedByAdsbdb = Boolean(registration || text(d.typeName) || typeCode || text(d.airline) || route);
+  const enrichedByAdsbdb = Boolean(registration || text(d.typeName) || typeCode || text(d.airline) || route
+    || manufacturer || text(d.registeredOwner) || text(d.registeredOwnerCountry) || text(d.operatorFlagCode));
   const source = [
     ['feed', 'Live position', text(d.feed?.source) ? `${text(d.feed.source)}${text(d.feed?.coverage) ? ` · ${text(d.feed.coverage)}` : ''}` : null],
     ['identity', 'Identity / route', enrichedByAdsbdb ? 'adsbdb' : null],

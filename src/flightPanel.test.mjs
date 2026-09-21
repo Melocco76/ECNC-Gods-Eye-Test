@@ -620,5 +620,5 @@ test('isolation: Phase A touches no AIS code, no server code, no row contract, n
   for (const file of ['./data/aisLiveVessels.js', './data/aisViewFilter.js', './data/aisRegions.js']) {
     assert.equal(/flightPanel|getTrackedDetails/.test(read(file)), false, `${file} is untouched by flights`);
   }
-  assert.equal(/photo|owner|manufactur|adsblol\/trace|schedule/i.test(panelSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/'[^']*'/g, '')), false, 'no later-phase features');
+  assert.equal(/photo|adsblol\/trace|schedule|seat|gate|terminal|baggage/i.test(panelSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/'[^']*'/g, '')), false, 'no later-phase features (photo, trace, schedule, seating, gates)');
 });
