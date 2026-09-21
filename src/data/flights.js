@@ -420,7 +420,9 @@ function _contextSubjectMetadata(icao24) {
     id: icao24,
     layerId: 'flights',
     layerName: 'Live Flights',
-    source: 'OpenSky Network',
+    // The provider the CURRENT snapshot came from (adsb.lol in production's
+    // fallback mode, OpenSky where it is actually used) - never a fixed string.
+    source: _lastSource,
     label: _contactLabel(icao24, _flightData.get(icao24)),
     latitude: described.latitude,
     longitude: described.longitude,
@@ -1010,6 +1012,17 @@ let _drReconcileIcao = null;
  * @param {*} value - Any value (typically a header string or null).
  * @returns {string} Lowercase trimmed string, or '' if falsy.
  */
+/**
+ * A transponder squawk as a 4-digit octal string, or null. Row index 14 of the
+ * OpenSky-shaped state vector (the adsb.lol fallback fills it from `squawk`).
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function parseSquawk(value) {
+  const code = String(value ?? '').trim();
+  return /^[0-7]{4}$/.test(code) ? code : null;
+}
+
 function _toLowerText(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -2899,6 +2912,14 @@ function _describeFlight(icao24) {
     velocityMps: displayed.speedMps,
     track: displayed.trackDeg,
     stale: Boolean(_missingPolls.get(icao24) || _backoff),
+    // ADDITIVE detail fields for the expanded flight panel (already held in the
+    // per-contact metadata; nothing new is fetched or polled for them).
+    geoAltitudeM: Number.isFinite(info?.geoAltitudeM) ? info.geoAltitudeM : null,
+    verticalRateMps: Number.isFinite(info?.verticalRate) ? info.verticalRate : null,
+    squawk: info?.squawk ?? null,
+    klass: info?.klass ?? null,
+    originCountry: info?.originCountry ?? null,
+    lastContactEpochMs: Number.isFinite(info?.lastContactEpochMs) ? info.lastContactEpochMs : null,
     airline: info?.airline ?? null,
     // CLASS label follows the TR-3B conversion so every downstream card
     // (cockpit, Contacts, analyst) agrees with the triangle on screen.
@@ -3422,6 +3443,17 @@ export function _setFlightTrackingRefreshOutcomeForTest({
     source,
     coverage,
   };
+}
+
+/** Test seam: set the feed provider the latest snapshot claims (mirrors the response headers). */
+export function _setFlightFeedSourceForTest({ source = 'OpenSky Network', coverage = 'worldwide upstream snapshot' } = {}) {
+  _lastSource = source;
+  _lastCoverage = coverage;
+}
+
+/** Test seam: the Context/voice descriptor for one contact. */
+export function _contextSubjectMetadataForTest(icao24) {
+  return _contextSubjectMetadata(icao24);
 }
 
 /** Add a cached contact so tests can model a target arriving on a later feed. */
@@ -4185,6 +4217,7 @@ const flightsLayer = {
         const icao24 = _normalizeTrackedIcao(rawIcao24);
         const category = Number.isFinite(state[17]) ? state[17] : null; // extended=1 emitter category
         const vertical_rate = Number.isFinite(state[11]) ? state[11] : null; // m/s, + = climbing
+        const squawk = parseSquawk(state[14]); // row[14]: transponder code (additive, not sticky - it changes)
         acceptedSnapshotIcaos.add(icao24);
         const onGround = on_ground === true;
 
@@ -4366,6 +4399,7 @@ const flightsLayer = {
           velocity: stickyNumber(velocity, prevMeta?.velocity, 0),
           true_track: stickyNumber(true_track, prevMeta?.true_track, 0),
           category: cat,
+          squawk,
           // An adsbdb-enriched type code outranks the coarse OpenSky category.
           klass: classifyAircraft({ typeCode: prevMeta?.typeCode ?? null, category: cat }),
           turnRateDps: prevMeta?.turnRateDps || 0,
@@ -5144,6 +5178,20 @@ const flightsLayer = {
    * @returns {{icao24: string, callsign: string|null, latitude: number, longitude: number, altitudeM: number, velocityMps: number|null, track: number|null}|null}
    *   Tracked aircraft info, or null when nothing is tracked.
    */
+  /**
+   * Read-only description for the expanded Flight details panel: the tracked
+   * civil aircraft's live descriptor plus which feed the positions came from.
+   * Never changes tracking. Null when nothing is tracked.
+   * @returns {object|null}
+   */
+  getTrackedDetails() {
+    if (!_trackedIcao) return null;
+    const described = _describeFlight(_trackedIcao);
+    if (!described) return null;
+    const { position, ...rest } = described;
+    return { ...rest, feed: { source: _lastSource, coverage: _lastCoverage } };
+  },
+
   getTrackedInfo() {
     if (!_trackedIcao) return null;
     const described = _describeFlight(_trackedIcao);

@@ -10158,7 +10158,7 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
 
   /* While the sheet is open the transient panels and dock step aside (state untouched). */
   body.mobile-sheet-open :is(#cctv-panel, #scene-panel, #global-context-panel, #map-weather-card,
-    #command-dock, #key-setup-chip) { visibility: hidden; pointer-events: none; }
+    #command-dock, #key-setup-chip, #flight-details-panel, #flight-details-btn) { visibility: hidden; pointer-events: none; }
 
   /* -- Utility panels: one at a time, as a card above the credit line ------------ */
   #left-panel-stack, #right-context-rail {
@@ -10285,6 +10285,78 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
 
 /* Loading screen: the ECNC logo leads; the original eye/globe mark is a small secondary mark. */
 .loader-content .loader-logo { width: 40px; margin: 0 auto 12px; filter: none; }
+
+/* ══ Flight details (expanded panel for the selected civil aircraft) ═══════════════════════
+   The compact tracked readout stays the quick view. This panel is opened on purpose from the
+   "Flight details" button; rows exist only when there is data. Desktop: right edge, under the
+   header. Phones: a scrollable sheet above the credit line (literal 72px, like the Layers sheet). */
+.flight-details-btn {
+  position: fixed; top: 64px; right: 12px; z-index: 124;
+  display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 14px;
+  border: 1px solid var(--glass-border-hover); border-radius: 999px;
+  background: var(--glass-bg); color: var(--text-primary);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  font: inherit; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer;
+  box-shadow: var(--panel-shadow);
+}
+.flight-details-btn[hidden], .flight-details-panel[hidden] { display: none; }
+.flight-details-btn .material-symbols-outlined { font-size: 18px; color: var(--accent); }
+.flight-details-btn:hover { border-color: var(--accent); }
+.flight-details-btn:focus-visible, .flight-details-close:focus-visible, .flight-details-body:focus-visible {
+  outline: 2px solid var(--accent, #4fc3f7); outline-offset: 2px;
+}
+.flight-details-panel {
+  position: fixed; top: 64px; right: 12px; z-index: 126; box-sizing: border-box;
+  display: flex; flex-direction: column;
+  width: min(340px, calc(100vw - 24px)); max-height: calc(100vh - 64px - 96px);
+  border: 1px solid var(--glass-border); border-radius: 12px;
+  background: var(--glass-bg); color: var(--text-primary); box-shadow: var(--panel-shadow);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+.flight-details-header { display: flex; align-items: center; gap: 8px; padding: 10px 6px 8px 14px; border-bottom: 1px solid var(--glass-border); }
+.flight-details-heading { display: grid; min-width: 0; flex: 1 1 auto; }
+.flight-details-kicker { font-size: 10px; letter-spacing: 0.14em; color: var(--text-secondary); }
+.flight-details-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; color: var(--accent); }
+.flight-details-close {
+  display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: 0 0 auto;
+  border: 0; border-radius: 10px; background: transparent; color: var(--text-secondary); cursor: pointer;
+}
+.flight-details-close:hover { color: var(--text-primary); }
+.flight-details-body { overflow-y: auto; overflow-x: hidden; padding: 4px 14px 12px; overscroll-behavior: contain; }
+.flight-details-section { padding: 8px 0 4px; min-width: 0; }
+.flight-details-section + .flight-details-section { border-top: 1px solid var(--glass-border); }
+.flight-details-section h3 { margin: 0 0 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-secondary); }
+.flight-details-section dl { margin: 0; }
+.flight-details-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 12.5px; min-width: 0; }
+.flight-details-row dt { flex: 0 0 auto; max-width: 46%; color: var(--text-secondary); }
+.flight-details-row dd { display: flex; flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: 6px; min-width: 0; margin: 0; text-align: right; }
+/* The explanatory note reads as a paragraph, not a label/value pair. */
+.flight-details-row.is-note { display: block; }
+.flight-details-row.is-note dt { max-width: none; margin-bottom: 2px; }
+.flight-details-row.is-note dd { justify-content: flex-start; text-align: left; }
+.flight-details-value { min-width: 0; overflow-wrap: anywhere; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.flight-details-tag {
+  padding: 1px 6px; border: 1px solid var(--glass-border-hover); border-radius: 999px;
+  font-size: 9px; letter-spacing: 0.08em; color: var(--text-secondary);
+}
+@media (max-width: 767px) {
+  .flight-details-btn { top: 56px; right: 8px; min-height: 44px; padding: 8px 16px; font-size: 13px; }
+  .flight-details-panel {
+    top: auto; left: 0; right: 0; bottom: 72px; width: 100%; max-height: min(50vh, calc(100dvh - 48px - 72px - 16px));
+    border-radius: 14px 14px 0 0;
+  }
+  .flight-details-row { font-size: 14px; padding: 6px 0; min-height: 44px; align-items: center; }
+  .flight-details-section h3 { font-size: 11px; }
+  /* The sheet owns the lower screen: the voice dock steps aside (state untouched), like under the Layers sheet. */
+  body.flight-details-open #command-dock { visibility: hidden; pointer-events: none; }
+}
+/* The cockpit and the clean/recording views own the whole screen. */
+body.cockpit-mode :is(#flight-details-btn, #flight-details-panel),
+body.ui-clean-view :is(#flight-details-btn, #flight-details-panel),
+body.recording-mode :is(#flight-details-btn, #flight-details-panel) { display: none; }
+@media (forced-colors: active) {
+  .flight-details-panel, .flight-details-btn { background: Canvas; color: CanvasText; border-color: CanvasText; }
+}
 
 /* ══ AIS viewer filter (personal, per-browser) ═══════════════════════════════════════════
    Four real checkboxes choosing which server-covered maritime regions THIS browser draws.

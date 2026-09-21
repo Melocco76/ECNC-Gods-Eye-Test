@@ -1077,6 +1077,23 @@
   <div id="intel-hud"></div>
 
   <!-- Loading screen -->
+  <button id="flight-details-btn" class="flight-details-btn" type="button" aria-controls="flight-details-panel" aria-expanded="false" hidden>
+    <span class="material-symbols-outlined" aria-hidden="true">flight</span>
+    <span>Flight details</span>
+  </button>
+  <aside id="flight-details-panel" class="flight-details-panel" aria-label="Flight details" hidden>
+    <header class="flight-details-header">
+      <div class="flight-details-heading">
+        <span class="flight-details-kicker">FLIGHT DETAILS</span>
+        <strong id="flight-details-title"></strong>
+      </div>
+      <button type="button" class="flight-details-close" data-flight-details-close aria-label="Close flight details">
+        <span class="material-symbols-outlined" aria-hidden="true">close</span>
+      </button>
+    </header>
+    <div id="flight-details-body" class="flight-details-body" tabindex="0"></div>
+  </aside>
+
   <div id="loading-screen">
     <div class="loader-content">
       <span id="ecnc-loader-brand-slot" class="brand-slot loader-brand-slot" data-brand-slot><img class="ecnc-logo" src="/ecnc-logo.png" alt="Electronic Concepts NC" width="1254" height="1254" fetchpriority="high" decoding="async" /></span>

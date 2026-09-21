@@ -17,6 +17,7 @@ import militaryAwarenessLayer from './data/militaryAwareness.js';
 import radarOverlayLayer from './data/radarOverlay.js';
 import localDataLayers from './data/localLayers.js';
 import { initLayerDrawer } from './layerDrawer.js';
+import { initFlightPanel } from './flightPanel.js';
 import { LAYER_STATE_REGISTRY } from './data/layerState.js';
 import { registerDataCredits } from './data/dataCredits.js';
 import { SceneDirector } from './scenes/director.js';
@@ -322,6 +323,8 @@ async function init() {
     // Header + Layers drawer wiring. After the UI has initialised: ui.js parks the
     // Display panel in the right rail during its own init, and this moves it on.
     initLayerDrawer({ viewer });
+    // Expanded flight details for the selected civil aircraft (read-only; the compact readout is unchanged).
+    initFlightPanel({ getDetails: () => flightsLayer.getTrackedDetails?.() || null });
 
     window.__godsEyeView = {
       viewer,

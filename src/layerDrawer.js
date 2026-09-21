@@ -293,6 +293,7 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
     { id: 'scene-panel', open: (el) => !el.classList.contains('collapsed'), close: (el) => el.querySelector('[data-collapse-target]')?.click() },
     { id: 'global-context-panel', open: (el) => !el.classList.contains('collapsed'), close: (el) => el.querySelector('[data-collapse-target]')?.click() },
     { id: 'map-weather-card', open: (el) => !el.hidden, close: (el) => el.querySelector('[data-map-weather-close]')?.click() },
+    { id: 'flight-details-panel', open: (el) => !el.hidden, close: (el) => el.querySelector('[data-flight-details-close]')?.click() },
   ].map((spec) => ({ ...spec, el: doc.getElementById(spec.id) })).filter((spec) => spec.el);
   let previouslyOpen = new Set();
   const enforceSinglePanel = () => {

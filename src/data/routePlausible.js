@@ -23,7 +23,8 @@ export function greatCircleKm(lat1, lon1, lat2, lon2) {
   return R_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function bearingRad(lat1, lon1, lat2, lon2) {
+/** Initial great-circle bearing from point 1 to point 2, in radians. */
+export function bearingRad(lat1, lon1, lat2, lon2) {
   const p1 = lat1 * D2R;
   const p2 = lat2 * D2R;
   const dl = (lon2 - lon1) * D2R;
