@@ -324,7 +324,10 @@ async function init() {
     // Display panel in the right rail during its own init, and this moves it on.
     initLayerDrawer({ viewer });
     // Expanded flight details for the selected civil aircraft (read-only; the compact readout is unchanged).
-    initFlightPanel({ getDetails: () => flightsLayer.getTrackedDetails?.() || null });
+    initFlightPanel({
+      getDetails: () => flightsLayer.getTrackedDetails?.() || null,
+      requestHistory: () => flightsLayer.requestTrackedHistory?.(),
+    });
 
     window.__godsEyeView = {
       viewer,

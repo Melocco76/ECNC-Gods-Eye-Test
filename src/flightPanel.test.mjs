@@ -557,7 +557,7 @@ test('markup: a hidden button and a hidden labelled panel exist; the compact rea
 test('wiring: initialised once from main.js against the layer accessor; joins the phone single-panel rule', () => {
   const main = read('./main.js');
   assert.match(main, /import \{ initFlightPanel \} from '\.\/flightPanel\.js';/);
-  assert.match(main, /initFlightPanel\(\{ getDetails: \(\) => flightsLayer\.getTrackedDetails\?\.\(\) \|\| null \}\);/);
+  assert.match(main, /initFlightPanel\(\{\s*getDetails: \(\) => flightsLayer\.getTrackedDetails\?\.\(\) \|\| null,\s*requestHistory: \(\) => flightsLayer\.requestTrackedHistory\?\.\(\),\s*\}\);/);
   assert.match(read('./layerDrawer.js'), /id: 'flight-details-panel', open: \(el\) => !el\.hidden/);
   assert.match(css, /body\.mobile-sheet-open :is\([^)]*#flight-details-panel, #flight-details-btn\)/, 'steps aside while the Layers sheet is open');
 });

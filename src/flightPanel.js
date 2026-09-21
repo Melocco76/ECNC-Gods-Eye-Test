@@ -115,6 +115,21 @@ export function formatDuration(minutes) {
   return `${Math.floor(total / 60)} h ${String(total % 60).padStart(2, '0')} min`;
 }
 
+/**
+ * Clock time of a trace timestamp: `12:42 PM` today, `Sep 20, 11:15 PM` otherwise.
+ * @param {number} epochSec
+ * @param {number} nowMs
+ * @param {string} [timeZone] IANA zone (tests pin one; the browser default is used otherwise).
+ */
+export function formatTraceTime(epochSec, nowMs, timeZone) {
+  if (!isNum(epochSec)) return null;
+  const date = new Date(epochSec * 1000);
+  const time = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone }).format(date);
+  const day = (d) => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone }).format(d);
+  if (day(date) === day(new Date(nowMs))) return time;
+  return `${new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone }).format(date)}, ${time}`;
+}
+
 export function formatSquawk(code) {
   const c = text(code);
   if (!c) return null;
@@ -176,7 +191,7 @@ function airport(point) {
  * @param {{nowMs?: number}} [options]
  * @returns {{icao24: string, title: string, sections: {id: string, title: string, rows: {key: string, label: string, value: string, tag?: string, tone?: string}[]}[]}|null}
  */
-export function buildFlightDetailsModel(d, { nowMs = Date.now() } = {}) {
+export function buildFlightDetailsModel(d, { nowMs = Date.now(), timeZone } = {}) {
   if (!d || !text(d.icao24)) return null;
   const callsign = text(d.callsign);
   const registration = text(d.registration);
@@ -247,12 +262,31 @@ export function buildFlightDetailsModel(d, { nowMs = Date.now() } = {}) {
     if (duration) calc.push(['eta', 'Time remaining', `≈ ${duration}`, 'ESTIMATED']);
   }
 
+  // History from the adsb.lol trace (selection-only). Times are the first/last TRACE timestamps of the
+  // current leg, not a schedule; distance and duration are calculated here from those points.
+  const history = d.history;
+  const historyReady = history?.status === 'ready' && history.stats;
+  if (history?.status === 'loading') {
+    calc.push(['history', 'History', 'Loading…']);
+  } else if (history?.status === 'unavailable') {
+    calc.push(['history', 'History', 'History unavailable']);
+  } else if (historyReady) {
+    const st = history.stats;
+    const since = formatTraceTime(st.startEpoch, nowMs, timeZone);
+    calc.push(['trackedSince', 'Tracked since', since ? `${since}${st.startsAtTraceBeginning ? ' (start of available trace)' : ''}` : null]);
+    if (st.onGroundNow) calc.push(['trackedUntil', 'Tracked until', formatTraceTime(st.endEpoch, nowMs, timeZone)]);
+    calc.push(['trackedDuration', 'Tracked duration', isNum(st.durationSec) ? formatDuration(st.durationSec / 60) : null, 'CALCULATED']);
+    calc.push(['trackedDistance', 'Tracked distance', isNum(st.distanceKm) ? `${grouped(st.distanceKm / KM_PER_NM)} nm (${grouped(st.distanceKm)} km)` : null, 'CALCULATED']);
+    calc.push(['historyPoints', 'History points', isNum(st.keptPoints) && isNum(st.legPoints) ? `${grouped(st.keptPoints)} shown · ${grouped(st.legPoints)} recorded` : null]);
+  }
+
   const enrichedByAdsbdb = Boolean(registration || text(d.typeName) || typeCode || text(d.airline) || route
     || manufacturer || text(d.registeredOwner) || text(d.registeredOwnerCountry) || text(d.operatorFlagCode));
   const source = [
     ['feed', 'Live position', text(d.feed?.source) ? `${text(d.feed.source)}${text(d.feed?.coverage) ? ` · ${text(d.feed.coverage)}` : ''}` : null],
     ['identity', 'Identity / route', enrichedByAdsbdb ? 'adsbdb' : null],
-    ['calcNote', 'Calculated values', remaining ? 'Bearing, distance and time remaining are computed here from the airport coordinates. They are not provider data, and time remaining is a rough estimate.' : null],
+    ['history', 'Track history', historyReady ? 'adsb.lol trace · current leg' : null],
+    ['calcNote', 'Calculated values', (remaining || historyReady) ? 'Values tagged CALCULATED or ESTIMATED are computed here from airport coordinates and the position trace. They are not provider data, and time remaining is a rough estimate.' : null],
   ];
 
   const toRows = (rows) => rows
@@ -286,7 +320,7 @@ export function buildFlightDetailsModel(d, { nowMs = Date.now() } = {}) {
  * @param {() => number} [options.now]
  * @param {number} [options.refreshMs] Refresh cadence while the panel is OPEN (never per frame).
  */
-export function initFlightPanel({ getDetails, doc = globalThis.document, win = globalThis.window, now = () => Date.now(), refreshMs = 2000 } = {}) {
+export function initFlightPanel({ getDetails, requestHistory = null, doc = globalThis.document, win = globalThis.window, now = () => Date.now(), refreshMs = 2000 } = {}) {
   const button = doc?.getElementById('flight-details-btn');
   const panel = doc?.getElementById('flight-details-panel');
   const body = doc?.getElementById('flight-details-body');
@@ -388,6 +422,12 @@ export function initFlightPanel({ getDetails, doc = globalThis.document, win = g
     paint(model);
   }
 
+  /** The panel being opened (or following a new selection while open) is the deliberate action that fetches history. */
+  function askForHistory() {
+    if (typeof requestHistory !== 'function' || !selectedId) return;
+    try { requestHistory(selectedId); } catch { /* history is optional */ }
+  }
+
   function stopTimer() {
     if (timer !== null) { win.clearInterval(timer); timer = null; }
   }
@@ -401,6 +441,7 @@ export function initFlightPanel({ getDetails, doc = globalThis.document, win = g
     panel.hidden = false;
     doc.body?.classList?.add('flight-details-open'); // lets the phone layout clear the voice dock
     setButton();
+    askForHistory();
     refresh();
     stopTimer();
     timer = win.setInterval(refresh, refreshMs);
@@ -439,7 +480,10 @@ export function initFlightPanel({ getDetails, doc = globalThis.document, win = g
     selectedId = id || null;
     if (changed) clearBody();
     setButton();
-    if (open) refresh();
+    if (open) {
+      if (changed) askForHistory();
+      refresh();
+    }
   };
 
   const onCleared = (event) => {

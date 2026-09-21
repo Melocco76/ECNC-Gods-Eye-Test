@@ -33,6 +33,7 @@ import {
   isTrackingSelectionGesture,
 } from './trackingClickGesture.js';
 import { createTrail } from './trailRenderer.js';
+import { createFlightHistory } from './flightHistory.js';
 import { isExplicitLayerStateOrigin } from './layerState.js';
 import {
   screenProjectedRotation,
@@ -550,6 +551,7 @@ function _setCockpitContactMode(active) {
   // synchronously blocked Chrome's renderer into Page Unresponsive.
   if (_modelCollection) _modelCollection.show = true;
   _trail?.setVisible(!next);
+  _historyTrail?.setVisible(!next);
   if (_trailHeadEntity) _trailHeadEntity.show = !next;
   for (const [icao24, bb] of _billboards) _applyFleetBillboardPresentation(icao24, bb);
   _lastCamPoseSig = '';
@@ -577,6 +579,10 @@ const TRAIL_COLOR = '#00d4ff';
 const TRAIL_MAX_POINTS = 400;
 /** @type {{setPositions: Function, clear: Function, destroy: Function}|null} Shared fading-trail renderer */
 let _trail = null;
+/** Selected-aircraft HISTORY (adsb.lol trace, current leg). One request, one polyline entity. */
+let _historyTrail = null;
+let _historyPaintToken = 0;
+const HISTORY_TRAIL_COLOR = '#c39bff';
 /** @type {Cesium.Entity|null} Cheap 2-point head segment bridging the last fix to the LIVE
  *  dead-reckoned icon, updated per frame via a CallbackProperty — so the trail head stays
  *  glued to the 12 Hz icon without rebuilding the 400-point trail primitive every frame. */
@@ -3148,6 +3154,49 @@ async function _backfillTrail(icao24, token, oldestFixEpochSec) {
 }
 
 /**
+ * Selected-aircraft history: a violet polyline of the aircraft's CURRENT leg from
+ * the adsb.lol trace, kept visually distinct from the live cyan session trail so
+ * past positions are never mistaken for the aircraft's location. It exists only
+ * for the tracked aircraft and only after Flight details asked for it.
+ */
+const _history = createFlightHistory({ onChange: (icao24) => _onHistoryChange(icao24) });
+
+function _onHistoryChange(icao24) {
+  if (icao24 !== _trackedIcao) return; // an answer for anything but the selected aircraft is ignored
+  const view = _history.view(icao24);
+  if (view.status === 'ready') void _paintHistoryPath(icao24, view.points);
+  else _clearHistoryPath();
+}
+
+async function _paintHistoryPath(icao24, points) {
+  const token = ++_historyPaintToken;
+  await ensureGeoidReady();
+  const parsed = points.map((p) => ({ lat: p[1], lon: p[2], altFt: p[3] }));
+  // Same bounded ground-floor resolve the trail backfill uses; never blocks the paint for long.
+  await resolveGroundFloorCellsBounded(parsed);
+  if (token !== _historyPaintToken || icao24 !== _trackedIcao || !_viewer) return; // a newer paint or another aircraft owns the map now
+  const positions = [];
+  let lastAltM = null;
+  for (const { lat, lon, altFt } of parsed) {
+    const baroM = (altFt === 'ground' || altFt == null || !Number.isFinite(Number(altFt)))
+      ? null
+      : Number(altFt) * 0.3048 + geoidHeight(lat, lon);
+    let altM = floorAltitudeM(baroM, cachedGroundFloor(lat, lon));
+    if (altM == null) altM = lastAltM != null ? lastAltM : 50;
+    lastAltM = altM;
+    positions.push(Cesium.Cartesian3.fromDegrees(lon, lat, altM));
+  }
+  if (!_historyTrail) _historyTrail = createTrail(_viewer, { color: HISTORY_TRAIL_COLOR, width: 2 });
+  _historyTrail.setVisible(!_cockpitContactMode);
+  _historyTrail.setPositions(positions);
+}
+
+function _clearHistoryPath() {
+  _historyPaintToken += 1; // invalidates any paint still awaiting terrain
+  if (_historyTrail) _historyTrail.clear();
+}
+
+/**
  * Clear the rendered trail and accumulation; invalidate pending backfills.
  */
 function _clearTrail() {
@@ -3165,6 +3214,11 @@ function _clearTrail() {
  */
 function _destroyTrail() {
   _clearTrail();
+  _clearHistoryPath();
+  if (_historyTrail) {
+    _historyTrail.destroy();
+    _historyTrail = null;
+  }
   if (_trail) {
     _trail.destroy();
     _trail = null;
@@ -3249,6 +3303,8 @@ function _clearTracking(skipViewerUntrack = false, {
   // cannot read the previous aircraft's cached/smoothed position.
   _resetTrackedDisplay();
   _clearTrail();
+  _history.clear(); // stops any history request and drops the selected aircraft's path
+  _clearHistoryPath();
 }
 
 function _normalizeTrackedIcao(candidate) {
@@ -3476,6 +3532,11 @@ export function _setFlightFeedSourceForTest({ source = 'OpenSky Network', covera
 /** Test seam: apply an adsbdb aircraft answer exactly as the enrichment queue does. */
 export function _applyTypeEnrichmentForTest(icao24, data) {
   _applyTypeEnrichment(icao24, data);
+}
+
+/** Test seam: the layer's history controller (state and request counters only). */
+export function _historyForTest() {
+  return _history;
 }
 
 /** Test seam: the Context/voice descriptor for one contact. */
@@ -5221,7 +5282,23 @@ const flightsLayer = {
     const described = _describeFlight(_trackedIcao);
     if (!described) return null;
     const { position, ...rest } = described;
-    return { ...rest, feed: { source: _lastSource, coverage: _lastCoverage } };
+    const history = _history.view(_trackedIcao);
+    return {
+      ...rest,
+      feed: { source: _lastSource, coverage: _lastCoverage },
+      // Status plus the calculated stats only: the polyline points stay inside the layer.
+      history: history.status === 'ready' ? { status: 'ready', stats: history.stats } : { status: history.status },
+    };
+  },
+
+  /**
+   * Ask for the tracked civil aircraft's history. Called ONLY by the Flight
+   * details panel when it is opened (or when the selection changes while it is
+   * open) - never by the map poll and never for ambient aircraft.
+   */
+  requestTrackedHistory() {
+    if (!_trackedIcao) return;
+    _history.request(_trackedIcao);
   },
 
   getTrackedInfo() {

@@ -58,6 +58,7 @@ import {
 import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
+import { createAdsbLolHistoryService } from './src/data/adsbLolTrace.js';
 import {
   ADMIN_LOGIN_BODY_MAX_BYTES,
   constantTimeEqual,
@@ -5545,6 +5546,9 @@ function trackBackfillProxies() {
     res.end(body);
   }
 
+  const historyService = createAdsbLolHistoryService({ readCapped: readCappedResponseText });
+  const _historyRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 60, globalMax: 240 });
+
   function install(middlewares) {
     middlewares.use('/api/opensky-track', async (req, res) => {
       try {
@@ -5567,6 +5571,36 @@ function trackBackfillProxies() {
         res.statusCode = 502;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'OpenSky track fetch failed' }));
+      }
+    });
+
+    // Selection-only, slim flight history (current leg, downsampled, with calculated
+    // distance/time) built from the same adsb.lol trace file. The raw ~875 KB body is
+    // never cached or forwarded; only the small normalised result is.
+    middlewares.use('/api/adsblol/history', async (req, res) => {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Allow', 'GET');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      if (!_historyRateLimiter(clientKey(req))) {
+        res.statusCode = 429;
+        res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
+        return;
+      }
+      try {
+        const incoming = new URL(req.url || '', 'http://localhost');
+        const hex = String(incoming.searchParams.get('hex') || '').trim().toLowerCase();
+        const result = await historyService.load(hex);
+        res.statusCode = result.status;
+        res.setHeader('X-History-Cache', result.cache);
+        res.end(JSON.stringify(result.body));
+      } catch {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ error: 'Flight history is temporarily unavailable.' }));
       }
     });
 
