@@ -6,7 +6,7 @@
 | B | Aircraft metadata (registration, type, owner, operator) from adsbdb / adsb.lol | Done (`2878c3ac`) |
 | C | Aircraft photos | **DEFERRED** |
 | D | Not started | — |
-| E | Route / history enhancement (selected-aircraft adsb.lol trace, current leg) | In progress (uncommitted) |
+| E | Route / history enhancement (selected-aircraft adsb.lol trace, current leg) | Done (`4d5abdf3`) |
 
 ## Phase C — DEFERRED pending provider permission / licensing clarification
 
