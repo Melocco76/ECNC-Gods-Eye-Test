@@ -184,6 +184,26 @@ function airport(point) {
 }
 
 /**
+ * adsbdb's `registered_owner_operator_flag_code` is sometimes an ICAO AIRCRAFT type
+ * ("C680", "EC45") rather than an airline/operator designator. Airline ICAO
+ * designators are three letters (AAL, DAL, EDV), so a 3-4 character value that
+ * contains a digit, or one that simply repeats the aircraft's own type code, is
+ * not shown as an "Operator code". Nothing is substituted; the raw normalised
+ * field is left untouched on the details object.
+ * @param {unknown} value raw provider value
+ * @param {string|null} typeCode this aircraft's ICAO type, when known
+ * @returns {string|null} the code to display, or null to omit the row
+ */
+export function operatorCodeForDisplay(value, typeCode = null) {
+  const code = text(value);
+  if (!code) return null;
+  const upper = code.toUpperCase().replace(/\s+/g, '');
+  if (typeCode && upper === String(typeCode).toUpperCase().replace(/\s+/g, '')) return null;
+  if (/^[A-Z][A-Z0-9]{2,3}$/.test(upper) && /\d/.test(upper)) return null;
+  return code;
+}
+
+/**
  * Turn the flights layer's tracked-aircraft description into sections/rows.
  * Rows with no value are omitted; sections with no rows are omitted.
  *
@@ -224,7 +244,7 @@ export function buildFlightDetailsModel(d, { nowMs = Date.now(), timeZone } = {}
     ['typeCode', 'ICAO type', typeCode],
     ['registeredOwner', 'Registered owner', text(d.registeredOwner)],
     ['ownerCountry', 'Owner country', text(d.registeredOwnerCountry)],
-    ['operatorCode', 'Operator code', text(d.operatorFlagCode)],
+    ['operatorCode', 'Operator code', operatorCodeForDisplay(d.operatorFlagCode, typeCode)],
     ['class', 'Class', showClass ? (CLASS_LABELS[klass] || klass) : null],
     ['icao24', 'ICAO24', text(d.icao24)?.toUpperCase()],
     ['country', 'Country (ICAO24 block)', text(d.originCountry)],

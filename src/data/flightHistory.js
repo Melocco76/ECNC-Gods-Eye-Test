@@ -13,6 +13,7 @@
  *
  * It only talks to the app's own `/api/adsblol/history` route. There is no
  * OpenSky fallback: if the history is unavailable the layer simply has none.
+ * The pure terrain-sampling helper used when the path is painted also lives here.
  */
 
 export const HISTORY_URL = '/api/adsblol/history';
@@ -20,6 +21,49 @@ export const HISTORY_TTL_MS = 10 * 60 * 1000;
 export const HISTORY_FAILURE_TTL_MS = 30 * 1000;
 export const HISTORY_CACHE_MAX = 20;
 export const HISTORY_TIMEOUT_MS = 10_000;
+
+/**
+ * Upper bound on the points sent to terrain-floor resolution when the violet
+ * path is painted. The path itself keeps every point (up to 300); only the
+ * ground-floor LOOKUP is sampled, because the terrain proxy takes 20-40 s and
+ * can 502 on ~300-point requests. Unsampled points fall back to the plain
+ * (unfloored) barometric height, the same as any cell that is not warm yet.
+ */
+export const HISTORY_TERRAIN_MAX = 60;
+/** Low points (ground / null altitude / under this) are where a floor matters, so they are sampled first. */
+const LOW_ALTITUDE_FT = 3000;
+
+/**
+ * Pick a small, bounded, representative subset of a history path for terrain
+ * lookup: the first and last points, an even spread along the route (so its
+ * shape is covered), and the low/ground points (thinned evenly), where the
+ * floor actually changes the drawn height. Order follows the path.
+ * @param {Array<Array>} points history rows `[t, lat, lon, altFt|'ground'|null, ...]`
+ * @param {number} [max]
+ * @returns {Array<{lat: number, lon: number}>} at most `max` positions
+ */
+export function sampleHistoryForTerrain(points, max = HISTORY_TERRAIN_MAX) {
+  const n = Array.isArray(points) ? points.length : 0;
+  if (n === 0 || max < 1) return [];
+  const toPos = (i) => ({ lat: points[i][1], lon: points[i][2] });
+  if (n <= max) return points.map((_, i) => toPos(i));
+  const picked = new Set([0, n - 1]);
+  const evenly = (indices, count) => {
+    if (count <= 0 || indices.length === 0) return;
+    const step = indices.length / count;
+    for (let k = 0; k < count && picked.size < max; k += 1) picked.add(indices[Math.min(indices.length - 1, Math.floor(k * step))]);
+  };
+  const low = [];
+  for (let i = 1; i < n - 1; i += 1) {
+    const alt = points[i][3];
+    if (alt === 'ground' || alt == null || (typeof alt === 'number' && alt < LOW_ALTITUDE_FT)) low.push(i);
+  }
+  evenly(low, Math.min(low.length, Math.floor(max / 3)));
+  const all = [];
+  for (let i = 1; i < n - 1; i += 1) all.push(i);
+  evenly(all, max - picked.size);
+  return [...picked].sort((a, b) => a - b).slice(0, max).map(toPos);
+}
 
 const validHex = (hex) => typeof hex === 'string' && /^[0-9a-f]{6}$/.test(hex);
 

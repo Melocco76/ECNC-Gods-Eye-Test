@@ -33,7 +33,7 @@ import {
   isTrackingSelectionGesture,
 } from './trackingClickGesture.js';
 import { createTrail } from './trailRenderer.js';
-import { createFlightHistory } from './flightHistory.js';
+import { HISTORY_TERRAIN_MAX, createFlightHistory, sampleHistoryForTerrain } from './flightHistory.js';
 import { isExplicitLayerStateOrigin } from './layerState.js';
 import {
   screenProjectedRotation,
@@ -66,6 +66,7 @@ import { formatFlightLevel } from './detectionDraw.js';
 import { createGroundSnap } from './groundSnap.js';
 import { trackedModelZoomActive } from './trackedModelRegime.js';
 import { geoidSurfaceLastResortM, pickRenderAltitudeM } from './renderAltitude.js';
+import { shouldBackfillFromOpenSky } from './openSkyBackfill.js';
 import { allocateCorridorCells, cachedGroundFloor, cachedMeshFloor, coarseFloorCoord, corridorFloorCells, displayFloorHeightM, floorAltitudeM, neighborFloorM, stickyFloorCell, warmGroundFloor, resolveGroundFloorCellsBounded, GROUND_FLOOR_LIFT_M } from './groundFloor.js';
 import { sampleMeshFloorCells } from './meshFloorSampler.js';
 import { ensureGeoidReady, geoidHeight } from './geoid.js';
@@ -322,6 +323,8 @@ let _lastStatus = null;
 let _lastSource = 'OpenSky Network';
 /** @type {string} Completeness boundary for the latest successful snapshot. */
 let _lastCoverage = 'worldwide upstream snapshot';
+/** @type {string} Lower-cased `x-opensky-auth-reason` of the latest good live poll ('' = none/enabled). Gates the OpenSky /tracks backfill. */
+let _openSkyAuthReason = '';
 
 function _flightApiUrl(viewer) {
   const cartographic = viewer?.camera?.positionCartographic;
@@ -3088,6 +3091,9 @@ function _startTrail(icao24) {
  * @returns {Promise<void>}
  */
 async function _backfillTrail(icao24, token, oldestFixEpochSec) {
+  // OpenSky disabled server-side (GEV_DISABLE_OPENSKY): /api/opensky-track can only 502, so do not ask.
+  // The live cyan trail keeps accumulating and the adsb.lol history path is unaffected.
+  if (!shouldBackfillFromOpenSky(_openSkyAuthReason)) return;
   let path = null;
   try {
     const response = await fetch('/api/opensky-track?icao24=' + encodeURIComponent(icao24), {
@@ -3172,8 +3178,10 @@ async function _paintHistoryPath(icao24, points) {
   const token = ++_historyPaintToken;
   await ensureGeoidReady();
   const parsed = points.map((p) => ({ lat: p[1], lon: p[2], altFt: p[3] }));
-  // Same bounded ground-floor resolve the trail backfill uses; never blocks the paint for long.
-  await resolveGroundFloorCellsBounded(parsed);
+  // Same bounded ground-floor resolve the trail backfill uses; never blocks the paint for long. Only a small,
+  // representative sample (<= HISTORY_TERRAIN_MAX) is looked up: the terrain proxy 502s on ~300-point requests.
+  // Every point is still drawn; a point whose cell is not warm keeps its plain barometric height.
+  await resolveGroundFloorCellsBounded(sampleHistoryForTerrain(points, HISTORY_TERRAIN_MAX));
   if (token !== _historyPaintToken || icao24 !== _trackedIcao || !_viewer) return; // a newer paint or another aircraft owns the map now
   const positions = [];
   let lastAltM = null;
@@ -3533,6 +3541,11 @@ export function _setFlightFeedSourceForTest({ source = 'OpenSky Network', covera
 export function _applyTypeEnrichmentForTest(icao24, data) {
   _applyTypeEnrichment(icao24, data);
 }
+
+/** Test seam: pretend the last live poll reported this `x-opensky-auth-reason`. */
+export function _setOpenSkyAuthReasonForTest(reason) { _openSkyAuthReason = String(reason || '').toLowerCase(); }
+/** Test seam: run the OpenSky /tracks backfill for `icao24` exactly as tracking would. */
+export function _backfillTrailForTest(icao24) { return _backfillTrail(icao24, _trailBackfillToken, Infinity); }
 
 /** Test seam: the layer's history controller (state and request counters only). */
 export function _historyForTest() {
@@ -4050,6 +4063,7 @@ const flightsLayer = {
     _lastStatus = null;
     _lastSource = 'OpenSky Network';
     _lastCoverage = 'worldwide upstream snapshot';
+    _openSkyAuthReason = '';
     _trackedIcao = null;
     _resetTrackedSelectionState();
     _trackedEntity = null;
@@ -4280,6 +4294,7 @@ const flightsLayer = {
         : null;
       _lastSource = responseSource || 'OpenSky Network';
       _lastCoverage = responseCoverage || 'worldwide upstream snapshot';
+      _openSkyAuthReason = authReason;
       const currentIcaos = new Set();
       const acceptedSnapshotIcaos = new Set();
       const now = Cesium.JulianDate.now();

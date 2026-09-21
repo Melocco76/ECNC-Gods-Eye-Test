@@ -11,7 +11,8 @@
  *  1. parses the readsb points (verified shape:
  *     `[secondsAfterTimestamp, lat, lon, alt_ft|'ground'|null, gs_kt, track,
  *       flags, baro_rate, extra, type, alt_geom, geom_rate, ias, roll]`),
- *  2. keeps the most recent leg (last departure from the ground onward),
+ *  2. keeps the most recent leg (last departure from the ground onward, and
+ *     never bridging a multi-hour silence with no ground point),
  *  3. downsamples it to a bounded point count that keeps the first point, the
  *     last point and the shape of the route,
  *  4. calculates distance and elapsed time from the trace itself.
@@ -93,6 +94,42 @@ const isGround = (p) => p[3] === 'ground';
 
 const PARKED_GAP_SEC = 10 * 60;
 
+/**
+ * Overnight-style silence with no ground point. Some aircraft park where the
+ * receiver never reports `ground`, so the leg-from-last-ground rule above finds
+ * nothing and would join yesterday's flying to today's across a 12-15 hour hole
+ * (real traces gave 19 h / 21.8 h "tracked duration"). A gap is treated as a
+ * break between trace segments only when BOTH hold:
+ *  - it is at least LONG_GAP_SEC (2 h). Real in-flight coverage holes seen on
+ *    adsb.lol traces were 73-85 min, so ordinary flights are never fragmented;
+ *  - the aircraft did not travel like something flying across it: the straight
+ *    line from the last point before to the first point after implies less than
+ *    MIN_TRANSIT_KMH (150 km/h, well under any airliner or light-aircraft cruise).
+ *    A long ocean gap that ends hundreds of km away therefore stays one leg,
+ *    while an aircraft that reappears where (or near where) it vanished, or that
+ *    took hours to cover a short hop, starts a new segment.
+ * This only picks where the current segment begins; it never asserts a departure.
+ */
+export const LONG_GAP_SEC = 2 * 60 * 60;
+export const MIN_TRANSIT_KMH = 150;
+
+/** Index of the first point after the most recent silent gap inside [start, end], or -1. */
+function lastSilentGapStart(points, start, end) {
+  for (let i = end; i > start; i -= 1) {
+    const gapSec = points[i][0] - points[i - 1][0];
+    if (gapSec < LONG_GAP_SEC) continue;
+    const km = greatCircleKm(points[i - 1][1], points[i - 1][2], points[i][1], points[i][2]);
+    if (km / (gapSec / 3600) < MIN_TRANSIT_KMH) return i;
+  }
+  return -1;
+}
+
+/** Move a leg's start past its most recent silent gap, if it holds one. */
+function trimSilentGap(points, leg) {
+  const cut = lastSilentGapStart(points, leg.start, leg.end);
+  return cut < 0 ? leg : { ...leg, start: cut, atTraceStart: false };
+}
+
 /** A leg's start is its last ground point, unless the receiver heard nothing for a long while after it (parked, silent): then it is the first point heard airborne. */
 function legStart(points, ground) {
   const next = points[ground + 1];
@@ -103,10 +140,16 @@ function legStart(points, ground) {
  * The most recent leg: from the last time the aircraft was on the ground before
  * its current airborne stretch (or, when it is on the ground now, the leg it
  * just finished, ending at touchdown so parked time is not counted).
+ * A long silent gap with no ground point also ends the segment (see LONG_GAP_SEC).
  * @param {Array[]} points chronological
  * @returns {{start: number, end: number, atTraceStart: boolean, onGroundNow: boolean}}
  */
 export function extractCurrentLeg(points) {
+  const leg = findLegByGround(points);
+  return leg.end < leg.start ? leg : trimSilentGap(points, leg);
+}
+
+function findLegByGround(points) {
   const n = points.length;
   if (n === 0) return { start: 0, end: -1, atTraceStart: true, onGroundNow: false };
   if (!isGround(points[n - 1])) {
