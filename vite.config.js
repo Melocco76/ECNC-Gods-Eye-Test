@@ -58,6 +58,8 @@ import {
 import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
+import { getParcelProviderConfig, isKnownParcelRegion, resolveParcelProvider } from './src/data/parcelProviderRegistry.js';
+import { toPublicParcel } from './src/data/parcelProviderData.js';
 import { createAdsbLolHistoryService } from './src/data/adsbLolTrace.js';
 import {
   ADMIN_LOGIN_BODY_MAX_BYTES,
@@ -5639,6 +5641,196 @@ function trackBackfillProxies() {
 }
 
 /**
+ * Vite plugin: Property/Parcel Intelligence Phase A1 — read-only, on-demand
+ * public-record parcel lookup. See `docs/PROPERTY-INTELLIGENCE.md` for the
+ * design intent this route deliberately does NOT deviate from:
+ *  - no arbitrary URL proxy — `region` is looked up in the fixed
+ *    `PARCEL_PROVIDER_REGISTRY` (`parcelProviderRegistry.js`) and nothing
+ *    else; an unknown region is 400, never a fallback/default provider;
+ *  - GET only, every route validates its own inputs before any upstream call;
+ *  - responses are always the normalized application shape
+ *    (`parcelProviderData.js`), never the raw upstream ArcGIS JSON;
+ *  - owner name may be normalized internally by the provider but is never
+ *    exposed by any route here in a searchable/bulk form — there is no
+ *    owner-name parameter anywhere below.
+ * Phase A1 ships no map layer and no UI panel; these routes exist only so a
+ * later phase's client code has something real to call.
+ */
+function parcelsProxy() {
+  const PARCEL_UPSTREAM_TIMEOUT_MS = 8_000;
+  const PARCEL_RESPONSE_CAP_BYTES = 512 * 1024;
+  const PARCEL_CACHE_MAX = 300;
+  const IDENTIFY_TTL_MS = 2 * 60_000;
+  const SEARCH_TTL_MS = 5 * 60_000;
+  const BY_ID_TTL_MS = 30 * 60_000;
+  const GEOMETRY_TTL_MS = 45 * 60_000;
+
+  const _identifyCache = new Map();
+  const _searchCache = new Map();
+  const _byIdCache = new Map();
+  const _geometryCache = new Map();
+  const _inFlight = new Map();
+
+  const _searchLimiter = makeRateLimiter({ windowMs: 60_000, max: 40, globalMax: 150 });
+  const _identifyLimiter = makeRateLimiter({ windowMs: 60_000, max: 60, globalMax: 200 });
+  const _byIdLimiter = makeRateLimiter({ windowMs: 60_000, max: 60, globalMax: 200 });
+  const _geometryLimiter = makeRateLimiter({ windowMs: 60_000, max: 60, globalMax: 200 });
+
+  function cacheGet(cache, key, ttlMs) {
+    const entry = cache.get(key);
+    if (!entry || Date.now() - entry.at >= ttlMs) return undefined;
+    return entry.value;
+  }
+  function cacheSet(cache, key, value) {
+    cache.delete(key); // re-insert at the fresh end: eviction is oldest-first
+    cache.set(key, { at: Date.now(), value });
+    while (cache.size > PARCEL_CACHE_MAX) cache.delete(cache.keys().next().value);
+  }
+
+  function providerFor(region) {
+    return resolveParcelProvider(region, {
+      fetchImpl: (...args) => globalThis.fetch(...args),
+      readCapped: (response) => readCappedResponseText(response, PARCEL_RESPONSE_CAP_BYTES),
+      timeoutMs: PARCEL_UPSTREAM_TIMEOUT_MS,
+      responseCapBytes: PARCEL_RESPONSE_CAP_BYTES,
+      now: () => Date.now(),
+    });
+  }
+
+  function sendJson(res, status, payload) {
+    res.statusCode = status;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(JSON.stringify(payload));
+  }
+
+  function install(middlewares) {
+    middlewares.use('/api/parcels', async (req, res) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Allow', 'GET');
+        sendJson(res, 405, { error: 'Method not allowed' });
+        return;
+      }
+      const incoming = new URL(req.url || '', 'http://localhost');
+      const urlPath = incoming.pathname; // already stripped of the '/api/parcels' mount prefix
+      const region = incoming.searchParams.get('region') || '';
+
+      if (!isKnownParcelRegion(region)) {
+        sendJson(res, 400, { error: 'Unknown or missing region.' });
+        return;
+      }
+      // Format-validate a parcelId here, BEFORE any provider call, so a malformed id is
+      // always 400 (a security-relevant response) rather than falling through to the
+      // provider's own defensive null-return, which the route below reports as 404
+      // ("well-formed id, no such parcel") — the two must stay distinguishable.
+      if (urlPath === '/detail' || urlPath === '/geometry') {
+        const parcelId = incoming.searchParams.get('parcelId') || '';
+        const providerConfig = getParcelProviderConfig(region);
+        if (!providerConfig?.parcelIdPattern?.test(parcelId)) {
+          sendJson(res, 400, { error: 'Invalid parcel id.' });
+          return;
+        }
+      }
+
+      try {
+        if (urlPath === '/identify') {
+          if (!_identifyLimiter(clientKey(req))) { sendJson(res, 429, { error: 'Rate limit exceeded' }); return; }
+          const lat = Number(incoming.searchParams.get('lat'));
+          const lon = Number(incoming.searchParams.get('lon'));
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) { sendJson(res, 400, { error: 'lat and lon must be finite numbers.' }); return; }
+          const key = `${region}:${lat.toFixed(5)},${lon.toFixed(5)}`;
+          const cached = cacheGet(_identifyCache, key, IDENTIFY_TTL_MS);
+          // The cache and the provider both keep the FULL normalized record (owner
+          // included, when the provider supplies it — useful internally later); only
+          // the response sent to the browser is sanitized, at this one boundary.
+          if (cached !== undefined) { sendJson(res, 200, { parcel: toPublicParcel(cached) }); return; }
+          const { promise } = coalesceProxyRequest(_inFlight, `identify:${key}`, async () => {
+            const provider = providerFor(region);
+            return provider ? provider.identifyParcel(lat, lon) : null;
+          });
+          const parcel = await promise;
+          cacheSet(_identifyCache, key, parcel);
+          sendJson(res, 200, { parcel: toPublicParcel(parcel) });
+          return;
+        }
+
+        if (urlPath === '/detail') {
+          if (!_byIdLimiter(clientKey(req))) { sendJson(res, 429, { error: 'Rate limit exceeded' }); return; }
+          const parcelId = incoming.searchParams.get('parcelId') || '';
+          const key = `${region}:${parcelId}`;
+          const cached = cacheGet(_byIdCache, key, BY_ID_TTL_MS);
+          if (cached !== undefined) { sendJson(res, 200, { parcel: toPublicParcel(cached) }); return; }
+          const { promise } = coalesceProxyRequest(_inFlight, `detail:${key}`, async () => {
+            const provider = providerFor(region);
+            return provider ? provider.getParcelById(parcelId) : null;
+          });
+          const parcel = await promise;
+          if (parcel === null) {
+            sendJson(res, 404, { error: 'Parcel not found.' });
+            return;
+          }
+          cacheSet(_byIdCache, key, parcel);
+          sendJson(res, 200, { parcel: toPublicParcel(parcel) });
+          return;
+        }
+
+        if (urlPath === '/geometry') {
+          if (!_geometryLimiter(clientKey(req))) { sendJson(res, 429, { error: 'Rate limit exceeded' }); return; }
+          const parcelId = incoming.searchParams.get('parcelId') || '';
+          const key = `${region}:${parcelId}`;
+          const cached = cacheGet(_geometryCache, key, GEOMETRY_TTL_MS);
+          if (cached !== undefined) { sendJson(res, 200, { geometry: cached }); return; }
+          const { promise } = coalesceProxyRequest(_inFlight, `geometry:${key}`, async () => {
+            const provider = providerFor(region);
+            return provider ? provider.getParcelGeometry(parcelId) : null;
+          });
+          const geometry = await promise;
+          if (geometry === null) {
+            sendJson(res, 404, { error: 'Parcel geometry not found.' });
+            return;
+          }
+          cacheSet(_geometryCache, key, geometry);
+          sendJson(res, 200, { geometry });
+          return;
+        }
+
+        if (urlPath === '/search') {
+          if (!_searchLimiter(clientKey(req))) { sendJson(res, 429, { error: 'Rate limit exceeded' }); return; }
+          const q = incoming.searchParams.get('q') || '';
+          const key = `${region}:${q.trim().toLowerCase()}`;
+          const cached = cacheGet(_searchCache, key, SEARCH_TTL_MS);
+          if (cached !== undefined) { sendJson(res, 200, { results: cached }); return; }
+          const { promise } = coalesceProxyRequest(_inFlight, `search:${key}`, async () => {
+            const provider = providerFor(region);
+            return provider ? provider.searchAddress(q) : [];
+          });
+          const results = await promise;
+          cacheSet(_searchCache, key, results);
+          sendJson(res, 200, { results });
+          return;
+        }
+
+        sendJson(res, 404, { error: 'Not found.' });
+      } catch (error) {
+        console.error('[Parcels Proxy]', error?.message || error);
+        sendJson(res, 502, { error: 'Parcel service is temporarily unavailable.' });
+      }
+    });
+  }
+
+  return {
+    name: 'parcels-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
+/**
  * Vite plugin: OpenAI Realtime ephemeral client secret.
  *
  * Keeps OPENAI_API_KEY server-side while the browser connects to the
@@ -8655,6 +8847,7 @@ export default defineConfig(({ mode }) => {
       adsbLolProxy(),
       aisLiveProxy(),
       trackBackfillProxies(),
+      parcelsProxy(),
       openAiRealtimeProxy(),
       googlePlacesContextProxy(),
       keySetupEndpoint(),
