@@ -33,6 +33,7 @@ COPY . .
 # integration); never hardcoded here, never committed with a real value.
 # Absent by default, which preserves today's keyless build unchanged.
 ARG GOOGLE_MAPS_BROWSER_KEY
+ARG CESIUM_ION_TOKEN
 RUN npm run build
 
 # ---------------------------------------------------------------------------
