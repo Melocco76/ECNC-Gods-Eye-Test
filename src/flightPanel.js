@@ -500,6 +500,15 @@ export function initFlightPanel({ getDetails, requestHistory = null, doc = globa
     selectedId = id || null;
     if (changed) clearBody();
     setButton();
+    // A NEWLY selected civil aircraft opens its own details automatically — the pill
+    // button remains for the case the panel was closed and the SAME aircraft is still
+    // selected. A re-selection event for the aircraft already shown (changed === false,
+    // e.g. the layer re-publishing the same tracked id) never reopens a panel the user
+    // closed, since this branch is gated on `changed`.
+    if (changed && selectedId && !open) {
+      openPanel();
+      return;
+    }
     if (open) {
       if (changed) askForHistory();
       refresh();

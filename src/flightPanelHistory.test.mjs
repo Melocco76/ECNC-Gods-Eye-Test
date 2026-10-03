@@ -307,7 +307,8 @@ function panelHarness({ initial }) {
   for (const id of ['flight-details-btn', 'flight-details-panel', 'flight-details-body', 'flight-details-title', 'layer-drawer']) ids[id] = makeNode();
   ids['flight-details-btn'].hidden = true;
   ids['flight-details-panel'].hidden = true;
-  ids['flight-details-panel'].querySelector = () => makeNode();
+  const closeBtn = makeNode();
+  ids['flight-details-panel'].querySelector = () => closeBtn;
   const win = new EventTarget();
   win.setInterval = () => ({ unref() {} });
   win.clearInterval = () => {};
@@ -315,31 +316,32 @@ function panelHarness({ initial }) {
   win.clearTimeout = (h) => clearTimeout(h);
   initFlightPanel({ getDetails: () => current, requestHistory: (hex) => requested.push(hex), doc: { getElementById: (id) => ids[id] || null, createElement: makeNode, body: null }, win, now: () => NOW });
   return {
-    ids, requested, setDetails: (d) => { current = d; },
+    ids, closeBtn, requested, setDetails: (d) => { current = d; },
     select: (id, layerId = 'flights') => win.dispatchEvent(new CustomEvent('gev:awareness-subject-selected', { detail: { layerId, id } })),
     clear: (id) => win.dispatchEvent(new CustomEvent('gev:awareness-subject-cleared', { detail: { layerId: 'flights', id } })),
     open: () => ids['flight-details-btn'].click(),
   };
 }
 
-test('history is asked for only when the panel is opened, and again only when the selection changes while it is open', async () => {
+test('history is asked for when a newly selected aircraft opens its panel, and again only when the selection changes while it is open', async () => {
   const h = panelHarness({ initial: details({ status: 'idle' }) });
   h.select(HEX_A);
-  assert.deepEqual(h.requested, [], 'selecting an aircraft alone fetches nothing');
-  h.open();
-  assert.deepEqual(h.requested, [HEX_A], 'opening Flight details is the deliberate action');
+  assert.deepEqual(h.requested, [HEX_A], 'selecting a civil aircraft opens its panel, which is the deliberate action');
   h.clear(HEX_A);
   h.setDetails(details({ status: 'idle' }, { icao24: HEX_B }));
   h.select(HEX_B);
   await tick();
-  assert.deepEqual(h.requested, [HEX_A, HEX_B], 'the open panel follows the new aircraft');
+  assert.deepEqual(h.requested, [HEX_A, HEX_B], 'the (auto-opened) panel follows the new aircraft');
 });
 
-test('a closed panel never requests history, however often the selection changes', async () => {
+test('a panel the user closed never re-requests history for the SAME still-selected aircraft', async () => {
   const h = panelHarness({ initial: details({ status: 'idle' }) });
-  for (const hex of [HEX_A, HEX_B, HEX_A, HEX_B]) { h.select(hex); await tick(); }
-  h.clear(HEX_B);
-  assert.deepEqual(h.requested, []);
+  h.select(HEX_A);
+  assert.deepEqual(h.requested, [HEX_A]);
+  h.closeBtn.click();
+  h.select(HEX_A); // re-published for the aircraft already shown: not a `changed` selection
+  await tick();
+  assert.deepEqual(h.requested, [HEX_A], 'never asked again');
 });
 
 test('a throwing history hook never breaks the panel', () => {

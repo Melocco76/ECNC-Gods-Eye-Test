@@ -392,15 +392,12 @@ test('nothing to wire without the markup', () => {
   assert.equal(initFlightPanel({ getDetails: () => null, doc: { getElementById: () => null }, win: new EventTarget() }), null);
 });
 
-test('the button exists only while a civil aircraft is selected; opening shows the panel and paints it', () => {
+test('selecting a civil aircraft opens its details automatically and paints them', () => {
   const h = harness({ initial: details() });
   assert.equal(h.button.hidden, true);
   assert.equal(h.panel.hidden, true);
   h.select('a40ca4');
-  assert.equal(h.button.hidden, false, 'Details is offered');
-  assert.equal(h.panel.hidden, true, 'but nothing opens by itself');
-  h.button.click();
-  assert.equal(h.panel.hidden, false);
+  assert.equal(h.panel.hidden, false, 'a newly selected aircraft opens its own panel');
   assert.equal(h.button.hidden, true, 'the button steps aside while the panel is open');
   assert.equal(h.title.textContent, 'DAL1491');
   const body = textOf(h.body);
@@ -408,6 +405,38 @@ test('the button exists only while a civil aircraft is selected; opening shows t
     assert.ok(body.includes(expected), `body shows ${expected}`);
   }
   assert.equal(h.intervals.size, 1, 'a single low-frequency refresh timer while open');
+});
+
+test('the "Flight details" button reopens a panel the user closed, for the aircraft still selected', () => {
+  const h = harness({ initial: details() });
+  h.select('a40ca4'); // auto-opened
+  h.closeBtn.click();
+  assert.equal(h.panel.hidden, true);
+  assert.equal(h.button.hidden, false, 'the button is the manual way back in');
+  h.button.click();
+  assert.equal(h.panel.hidden, false);
+  assert.equal(h.title.textContent, 'DAL1491');
+});
+
+test('a re-published selection for the SAME tracked aircraft does not reopen a panel the user closed', () => {
+  const h = harness({ initial: details() });
+  h.select('a40ca4');
+  h.closeBtn.click();
+  assert.equal(h.panel.hidden, true);
+  // e.g. the layer re-publishing the already-tracked id (re-click, restore, voice retarget-same)
+  h.select('a40ca4');
+  assert.equal(h.panel.hidden, true, 'no `changed` selection: it stays closed');
+  assert.equal(h.button.hidden, false);
+});
+
+test('selecting a DIFFERENT aircraft opens the panel again even after a manual close', () => {
+  const h = harness({ initial: details() });
+  h.select('a40ca4');
+  h.closeBtn.click();
+  h.setDetails(details({ icao24: 'ae1fa4', callsign: 'SWA696' }));
+  h.select('ae1fa4');
+  assert.equal(h.panel.hidden, false, 'a genuinely new selection opens again');
+  assert.equal(h.title.textContent, 'SWA696');
 });
 
 test('opening and closing never touch tracking: the panel only reads', () => {
@@ -483,10 +512,10 @@ test('deselecting closes and clears the panel and hides the button', async () =>
   assert.equal(h.title.textContent, '');
   assert.equal(h.api.selectedId(), null);
   assert.equal(h.intervals.size, 0);
-  // a later selection starts clean
+  // a later selection is a fresh `changed` event (selectedId was cleared to null): it opens again
   h.select('a40ca4');
-  assert.equal(h.panel.hidden, true);
-  assert.equal(h.button.hidden, false);
+  assert.equal(h.panel.hidden, false);
+  assert.equal(h.button.hidden, true);
 });
 
 test('another layer taking the selection (military, vessel) removes the civil panel', async () => {
