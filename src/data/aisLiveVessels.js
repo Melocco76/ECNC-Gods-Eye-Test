@@ -46,10 +46,12 @@ import {
 import { requestWorldFocus } from '../worldFocus.js';
 import { buildAisCoverageModel, fetchAisRegionsStatus } from './aisCoverageStatus.js';
 import {
+  AIS_VIEW_WORLDWIDE,
   effectiveViewRegions,
   loadViewRegions,
   planViewChange,
   saveViewRegions,
+  saveWorldwidePreference,
   vesselPassesViewFilter,
 } from './aisViewFilter.js';
 import { holdContinuousRender, releaseContinuousRender } from '../renderGovernor.js';
@@ -369,9 +371,12 @@ function viewSavedRegions() {
   return _view.saved;
 }
 
+/** Null means "no filter": every vessel passes, regardless of `available`. */
 function currentViewSet() {
+  const saved = viewSavedRegions();
+  if (saved === AIS_VIEW_WORLDWIDE) return null;
   if (!_view.available) return null;
-  return new Set(effectiveViewRegions(viewSavedRegions(), _view.available));
+  return new Set(effectiveViewRegions(saved, _view.available));
 }
 
 function recordPassesViewFilter(record) {
@@ -415,6 +420,9 @@ function syncViewAvailability(model) {
 }
 
 function toggleViewRegion(id, wantOn) {
+  // Checking a region while Worldwide is saved is how a viewer EXITS Worldwide:
+  // planViewChange treats Worldwide as having no prior regions, so this yields a
+  // fresh single-region selection. Selecting Worldwide itself never comes through here.
   const plan = planViewChange(viewSavedRegions(), id, wantOn, _view.available || []);
   if (!plan.ok) {
     notifyRowControls();
@@ -426,12 +434,24 @@ function toggleViewRegion(id, wantOn) {
   return true;
 }
 
+/**
+ * Explicit transition to Worldwide / All Vessels: no viewer-side region filter.
+ * The backend subscription is untouched - this only changes what THIS browser draws.
+ */
+function selectWorldwide() {
+  _view.saved = AIS_VIEW_WORLDWIDE;
+  saveWorldwidePreference(_view.storage);
+  applyViewFilter();
+  return true;
+}
+
 /** Plain-data description of the viewer filter for the row renderer (null = no filter UI). */
 function viewerRowModel() {
   if (!_view.available) return null;
   return {
     available: [..._view.available],
     selected: [...(state.viewSet || [])],
+    worldwide: viewSavedRegions() === AIS_VIEW_WORLDWIDE,
     shown: state.vesselRecords.length,
     received: state.receivedCount,
     fixedArea: _coverageModel?.kind === 'fixed',
@@ -466,7 +486,7 @@ const aisLiveVesselsLayer = {
     if (!_coverageModel) return null;
     const viewer = viewerRowModel();
     return viewer
-      ? { coverage: _coverageModel, viewer: { view: viewer, actions: { toggle: toggleViewRegion } } }
+      ? { coverage: _coverageModel, viewer: { view: viewer, actions: { toggle: toggleViewRegion, selectWorldwide } } }
       : { coverage: _coverageModel };
   },
 
@@ -2147,6 +2167,11 @@ export function _getViewFilterForTest() {
 /** Test seam: apply a viewer checkbox click exactly as the row does. */
 export function _toggleViewRegionForTest(id, wantOn) {
   return toggleViewRegion(id, wantOn);
+}
+
+/** Test seam: select Worldwide / All Vessels exactly as the row does. */
+export function _selectWorldwideForTest() {
+  return selectWorldwide();
 }
 
 /** Test seam: the row descriptor the manager renders. */

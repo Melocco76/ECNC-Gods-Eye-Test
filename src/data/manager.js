@@ -2338,7 +2338,10 @@ export class DataLayerManager {
     }
     const catalogue = publicRegionCatalogue();
     const available = new Set(view.available || []);
-    const selected = new Set(view.selected || []);
+    const worldwide = Boolean(view.worldwide);
+    // Worldwide itself never counts toward "only one left": it is always a valid,
+    // always-reachable state, never the thing the last-region guard protects.
+    const selected = new Set(worldwide ? [] : (view.selected || []));
     const onlyOne = selected.size <= 1;
     const labelOf = new Map(catalogue.map(({ id, label }) => [id, label]));
 
@@ -2355,6 +2358,27 @@ export class DataLayerManager {
       group.className = 'data-toggle-viewer-regions';
       group.setAttribute('role', 'group');
       group.setAttribute('aria-label', 'Maritime regions to show on this device');
+      // Worldwide / All Vessels sits above the four regional rows: no viewer-side
+      // filter at all, drawing everything the (unchanged) backend subscription
+      // delivers. Reuses the same row markup/styling as a regional checkbox.
+      const worldwideRow = document.createElement('label');
+      worldwideRow.className = 'data-toggle-viewer-region';
+      const worldwideInput = document.createElement('input');
+      worldwideInput.type = 'checkbox';
+      worldwideInput.className = 'data-toggle-viewer-check';
+      worldwideInput.dataset.regionId = 'worldwide';
+      worldwideInput.addEventListener('change', () => {
+        worldwideInput.checked = false; // the layer decides; the next sync shows the result
+        node._viewerActions?.selectWorldwide?.();
+      });
+      const worldwideName = document.createElement('span');
+      worldwideName.className = 'data-toggle-viewer-name';
+      worldwideName.textContent = 'Worldwide / All Vessels';
+      const worldwideState = document.createElement('span');
+      worldwideState.className = 'data-toggle-viewer-state';
+      worldwideRow.append(worldwideInput, worldwideName, worldwideState);
+      group.appendChild(worldwideRow);
+      refs.worldwide = { input: worldwideInput, state: worldwideState };
       for (const region of catalogue) {
         const row = document.createElement('label');
         row.className = 'data-toggle-viewer-region';
@@ -2390,13 +2414,21 @@ export class DataLayerManager {
     node._viewerActions = viewer.actions;
 
     const refs = node._viewerRefs;
+    // Worldwide cannot be unticked directly - like the "last region" rule below,
+    // narrowing happens by choosing a region, not by an empty/undefined state.
+    refs.worldwide.input.checked = worldwide;
+    refs.worldwide.input.disabled = worldwide;
+    refs.worldwide.input.title = worldwide ? 'Choose a region below to narrow the view' : '';
+    refs.worldwide.state.textContent = worldwide ? 'Shown' : 'Hidden';
     for (const region of catalogue) {
       const { input, state } = refs.rows.get(region.id);
       const isAvailable = available.has(region.id);
       const isOn = isAvailable && selected.has(region.id);
       input.checked = isOn;
       // Not covered by this server -> cannot be chosen. The single remaining
-      // region cannot be switched off (there must always be something to see).
+      // region cannot be switched off (there must always be something to see);
+      // every region reads as unchecked while Worldwide is active, so this never
+      // disables one on Worldwide's account - only on-screen "sole checked" does.
       input.disabled = !isAvailable || (isOn && onlyOne);
       input.title = !isAvailable
         ? 'This server does not cover this region'

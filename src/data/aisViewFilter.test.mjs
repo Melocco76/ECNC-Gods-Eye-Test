@@ -7,11 +7,13 @@ import fs from 'node:fs';
 import {
   AIS_VIEW_DEFAULT_REGIONS,
   AIS_VIEW_REGIONS_KEY,
+  AIS_VIEW_WORLDWIDE,
   effectiveViewRegions,
   loadViewRegions,
   planViewChange,
   sanitizeRegionIds,
   saveViewRegions,
+  saveWorldwidePreference,
   vesselPassesViewFilter,
 } from './aisViewFilter.js';
 import { buildAisCoverageModel } from './aisCoverageStatus.js';
@@ -20,6 +22,7 @@ import aisLiveVesselsLayer, {
   _beginAisSessionForTest,
   _getViewFilterForTest,
   _resetViewFilterForTest,
+  _selectWorldwideForTest,
   _setVesselOverlayHostForTest,
   _setVesselStateForTest,
   _toggleViewRegionForTest,
@@ -41,14 +44,15 @@ function fakeStorage(initial = {}) {
 
 // -- pure rules ---------------------------------------------------------------------------------
 
-test('the default viewer regions are Gulf + U.S. East Coast', () => {
-  assert.deepEqual([...AIS_VIEW_DEFAULT_REGIONS], ['gulf', 'east-coast']);
+test('the default viewer preference is Worldwide / All Vessels, not a region list', () => {
+  assert.equal(AIS_VIEW_WORLDWIDE, 'worldwide');
+  assert.deepEqual([...AIS_VIEW_DEFAULT_REGIONS], ['gulf', 'east-coast'], 'the historical region-only default is kept as a named constant');
   assert.equal(AIS_VIEW_REGIONS_KEY, 'gev.ais.viewRegions');
-  assert.deepEqual(loadViewRegions(fakeStorage()), ['gulf', 'east-coast']);
-  assert.deepEqual(loadViewRegions(null), ['gulf', 'east-coast'], 'no storage at all');
+  assert.equal(loadViewRegions(fakeStorage()), AIS_VIEW_WORLDWIDE);
+  assert.equal(loadViewRegions(null), AIS_VIEW_WORLDWIDE, 'no storage at all');
 });
 
-test('a saved choice round-trips as a plain JSON array of region IDs and nothing else', () => {
+test('a saved region choice round-trips as a plain JSON array of region IDs and nothing else', () => {
   const storage = fakeStorage();
   assert.equal(saveViewRegions(['west-coast'], storage), true);
   assert.deepEqual([...storage.map.keys()], ['gev.ais.viewRegions']);
@@ -58,27 +62,47 @@ test('a saved choice round-trips as a plain JSON array of region IDs and nothing
   assert.deepEqual(loadViewRegions(storage), ALL, 'all four may be chosen, stored in catalogue order');
 });
 
-test('invalid, stale or corrupt stored values are ignored safely', () => {
+test('Worldwide round-trips through the same storage key as the sentinel string, and old saved arrays keep loading unchanged', () => {
+  const storage = fakeStorage();
+  assert.equal(saveWorldwidePreference(storage), true);
+  assert.deepEqual([...storage.map.keys()], ['gev.ais.viewRegions'], 'same key as a regional preference');
+  assert.equal(storage.map.get('gev.ais.viewRegions'), '"worldwide"');
+  assert.equal(loadViewRegions(storage), AIS_VIEW_WORLDWIDE);
+  // Backward compatibility: a plain region-array value saved before this feature existed
+  // (or by an older build) still loads exactly as it always did.
+  const legacy = fakeStorage({ [AIS_VIEW_REGIONS_KEY]: '["west-coast","gulf"]' });
+  assert.deepEqual(loadViewRegions(legacy), ['gulf', 'west-coast']);
+  // And going the other way: selecting a region after Worldwide overwrites the sentinel
+  // with a plain array, exactly like any other regional save.
+  saveViewRegions(['gulf'], storage);
+  assert.equal(storage.map.get('gev.ais.viewRegions'), '["gulf"]');
+  assert.deepEqual(loadViewRegions(storage), ['gulf']);
+});
+
+test('invalid, stale or corrupt stored values fall back to Worldwide, never to a silent regional narrowing', () => {
   const cases = ['not json', '{"a":1}', '"gulf"', '[]', '["atlantis"]', '[1,2,3]', 'null', '[["gulf"]]'];
   for (const raw of cases) {
-    assert.deepEqual(loadViewRegions(fakeStorage({ [AIS_VIEW_REGIONS_KEY]: raw })), ['gulf', 'east-coast'], raw);
+    assert.equal(loadViewRegions(fakeStorage({ [AIS_VIEW_REGIONS_KEY]: raw })), AIS_VIEW_WORLDWIDE, raw);
   }
   assert.deepEqual(loadViewRegions(fakeStorage({ [AIS_VIEW_REGIONS_KEY]: '["atlantis","west-coast",7]' })), ['west-coast'], 'unknown IDs dropped, valid kept');
   const throwing = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
-  assert.deepEqual(loadViewRegions(throwing), ['gulf', 'east-coast']);
+  assert.equal(loadViewRegions(throwing), AIS_VIEW_WORLDWIDE);
   assert.equal(saveViewRegions(['gulf'], throwing), false, 'a blocked write never throws');
+  assert.equal(saveWorldwidePreference(throwing), false, 'a blocked write never throws');
   assert.equal(saveViewRegions([], fakeStorage()), false, 'nothing is saved for an empty choice');
   assert.equal(saveViewRegions(['atlantis'], fakeStorage()), false);
   assert.deepEqual(sanitizeRegionIds(['east-coast', 'east-coast', 'x', 'gulf']), ['gulf', 'east-coast']);
 });
 
-test('the effective selection is saved choice AND server-available regions', () => {
+test('the effective selection is saved choice AND server-available regions; Worldwide is always null (no filter)', () => {
   assert.deepEqual(effectiveViewRegions(['gulf', 'east-coast'], ALL), ['gulf', 'east-coast']);
   assert.deepEqual(effectiveViewRegions(['gulf', 'east-coast'], ['gulf']), ['gulf'], 'East is not covered: intersection');
   assert.deepEqual(effectiveViewRegions(['west-coast'], ['gulf']), ['gulf'], 'empty intersection falls back to what is available');
   assert.deepEqual(effectiveViewRegions(['west-coast'], ALL), ['west-coast']);
   assert.deepEqual(effectiveViewRegions(ALL, ALL), ALL);
   assert.deepEqual(effectiveViewRegions(['gulf'], []), []);
+  assert.equal(effectiveViewRegions(AIS_VIEW_WORLDWIDE, ALL), null, 'no filter, even when every region is available');
+  assert.equal(effectiveViewRegions(AIS_VIEW_WORLDWIDE, []), null, 'no filter, even when the server reports nothing available');
 });
 
 test('at least one region is required; unavailable regions cannot be switched on; no max-2 rule locally', () => {
@@ -91,6 +115,12 @@ test('at least one region is required; unavailable regions cannot be switched on
   assert.deepEqual(saved, ALL, 'no max-2 rule for a local view');
   // A saved preference for an unavailable region survives an unrelated change.
   assert.deepEqual(planViewChange(['gulf', 'west-coast'], 'gulf', true, ['gulf']), { ok: true, saved: ['gulf', 'west-coast'] });
+});
+
+test('checking a region while Worldwide is saved exits Worldwide into a fresh single-region selection', () => {
+  assert.deepEqual(planViewChange(AIS_VIEW_WORLDWIDE, 'west-coast', true, ALL), { ok: true, saved: ['west-coast'] });
+  assert.deepEqual(planViewChange(AIS_VIEW_WORLDWIDE, 'gulf', true, ['gulf']), { ok: true, saved: ['gulf'] });
+  assert.deepEqual(planViewChange(AIS_VIEW_WORLDWIDE, 'west-coast', true, ['gulf']), { ok: false, reason: 'unavailable' });
 });
 
 test('of the 16 subsets of four regions exactly the 15 non-empty ones are reachable; the empty one is refused', () => {
@@ -187,8 +217,25 @@ function withLayer(storage, fn, { available = null } = {}) {
 }
 const shownIds = (collection) => collection.items.filter((b) => b.show).length;
 
-test('the default viewer (Gulf + East) draws only those vessels, and hidden ones stay cached', () => {
+test('the default viewer is Worldwide: every vessel draws, including the four named-region ones', () => {
   withLayer(fakeStorage(), ({ collection }) => {
+    _applyAisFeedSnapshotForTest({}, payload(FIXTURE));
+    const filter = _getViewFilterForTest();
+    assert.equal(filter.saved, AIS_VIEW_WORLDWIDE);
+    assert.deepEqual(filter.selected, [], 'no per-region selection while Worldwide is active');
+    assert.equal(filter.received, 8, 'every vessel is cached');
+    assert.equal(filter.shown, 8, 'nothing is hidden, including the four regioned vessels');
+    assert.equal(collection.items.length, 8);
+    assert.equal(shownIds(collection), 8, 'all drawn, even though every four-region box is geometrically "available"');
+    assert.equal(aisLiveVesselsLayer.getStats().count, 8);
+    assert.equal(aisLiveVesselsLayer.getStats().receivedCount, 8);
+    assert.equal(aisLiveVesselsLayer.getAllPositions(50).length, 8);
+    assert.equal(_viewerRowModelForTest().worldwide, true);
+  });
+});
+
+test('a regional choice (Gulf + East) draws only those vessels, and hidden ones stay cached', () => {
+  withLayer(fakeStorage({ [AIS_VIEW_REGIONS_KEY]: '["gulf","east-coast"]' }), ({ collection }) => {
     _applyAisFeedSnapshotForTest({}, payload(FIXTURE));
     const filter = _getViewFilterForTest();
     assert.deepEqual(filter.selected, ['gulf', 'east-coast']);
@@ -200,6 +247,23 @@ test('the default viewer (Gulf + East) draws only those vessels, and hidden ones
     assert.equal(aisLiveVesselsLayer.getStats().receivedCount, 8);
     assert.equal(aisLiveVesselsLayer.getAllPositions(50).length, 6, 'detection/nearby only see drawn vessels');
     assert.equal(aisLiveVesselsLayer.hasContact('333000001'), true, 'a filtered vessel is still present in the feed');
+    assert.equal(_viewerRowModelForTest().worldwide, false);
+  });
+});
+
+test('Worldwide -> one region -> Worldwide: each transition redraws immediately, with no request', () => {
+  const storage = fakeStorage();
+  withLayer(storage, ({ collection, calls }) => {
+    _applyAisFeedSnapshotForTest({}, payload(FIXTURE));
+    assert.equal(shownIds(collection), 8, 'starts Worldwide');
+    assert.equal(_toggleViewRegionForTest('west-coast', true), true, 'checking a region exits Worldwide');
+    assert.deepEqual(_getViewFilterForTest().selected, ['west-coast']);
+    assert.equal(shownIds(collection), 2, 'only the West Coast vessel + the unclassified one');
+    assert.equal(_selectWorldwideForTest(), true);
+    assert.equal(_getViewFilterForTest().saved, AIS_VIEW_WORLDWIDE);
+    assert.equal(shownIds(collection), 8, 'back to Worldwide: every backend-delivered vessel again');
+    assert.equal(storage.map.get(AIS_VIEW_REGIONS_KEY), '"worldwide"');
+    assert.equal(calls.length, 0, 'no fetch, no POST, no reconnect for any of it');
   });
 });
 
@@ -216,7 +280,7 @@ test('an overlapping vessel is one row and one sprite, drawn for either region',
 });
 
 test('ticking a region draws its cached vessels immediately, with no request', () => {
-  const storage = fakeStorage();
+  const storage = fakeStorage({ [AIS_VIEW_REGIONS_KEY]: '["gulf","east-coast"]' });
   withLayer(storage, ({ collection, calls }) => {
     _applyAisFeedSnapshotForTest({}, payload(FIXTURE));
     assert.equal(shownIds(collection), 6);
@@ -233,7 +297,7 @@ test('ticking a region draws its cached vessels immediately, with no request', (
 });
 
 test('all four regions may be shown, and Great Lakes alone works', () => {
-  withLayer(fakeStorage(), ({ collection }) => {
+  withLayer(fakeStorage({ [AIS_VIEW_REGIONS_KEY]: '["gulf","east-coast"]' }), ({ collection }) => {
     _applyAisFeedSnapshotForTest({}, payload(FIXTURE));
     _toggleViewRegionForTest('west-coast', true);
     _toggleViewRegionForTest('great-lakes', true);
@@ -270,7 +334,8 @@ test('two viewers are independent: choices live only in each browser', () => {
     _toggleViewRegionForTest('east-coast', false);
     steveShown = _getViewFilterForTest();
   });
-  assert.deepEqual(samShown.selected, ['gulf', 'east-coast']);
+  assert.equal(samShown.saved, AIS_VIEW_WORLDWIDE, "Sam never touched anything: still Worldwide");
+  assert.deepEqual(samShown.selected, []);
   assert.deepEqual(steveShown.selected, ['west-coast']);
   assert.equal(sam.map.size, 0, "Sam's browser stored nothing because Sam changed nothing");
   assert.equal(steve.map.get(AIS_VIEW_REGIONS_KEY), '["west-coast"]');
@@ -284,12 +349,12 @@ test('the choice is restored on the next visit', () => {
   });
   withLayer(storage, () => {
     _applyAisFeedSnapshotForTest({}, payload(FIXTURE));
-    assert.deepEqual(_getViewFilterForTest().selected, ['gulf', 'east-coast', 'great-lakes']);
+    assert.deepEqual(_getViewFilterForTest().selected, ['great-lakes'], 'exiting Worldwide started a fresh single-region choice, which is what persisted');
   });
 });
 
 test('legacy server: only the Gulf is available, unavailable regions cannot be chosen', () => {
-  const storage = fakeStorage();
+  const storage = fakeStorage({ [AIS_VIEW_REGIONS_KEY]: '["gulf","east-coast"]' });
   withLayer(storage, ({ collection }) => {
     const legacyRows = FIXTURE.filter((r) => r.regionIds.includes('gulf') && !r.regionIds.includes('east-coast'));
     _applyAisFeedSnapshotForTest({}, {
@@ -298,12 +363,28 @@ test('legacy server: only the Gulf is available, unavailable regions cannot be c
     });
     const model = _viewerRowModelForTest();
     assert.deepEqual(model.available, ['gulf']);
-    assert.deepEqual(model.selected, ['gulf'], 'default East is not covered: intersection is Gulf');
+    assert.deepEqual(model.selected, ['gulf'], 'East is saved but not covered: intersection is Gulf');
+    assert.equal(model.worldwide, false);
     assert.equal(model.fixedArea, true);
     assert.equal(shownIds(collection), 2, 'every legacy vessel is still drawn');
     assert.equal(_toggleViewRegionForTest('east-coast', true), false, 'East cannot be turned on');
     assert.equal(_toggleViewRegionForTest('gulf', false), false, 'and the only region cannot be turned off');
-    assert.equal(storage.map.size, 0, 'refused clicks store nothing');
+    assert.equal(storage.map.get(AIS_VIEW_REGIONS_KEY), '["gulf","east-coast"]', 'refused clicks never rewrite storage');
+  });
+});
+
+test('Worldwide ignores a legacy single-region server too: nothing is hidden', () => {
+  withLayer(fakeStorage(), ({ collection }) => {
+    const legacyRows = FIXTURE.filter((r) => r.regionIds.includes('gulf') && !r.regionIds.includes('east-coast'));
+    _applyAisFeedSnapshotForTest({}, {
+      status: 'live', lastMessageAt: 5, rows: legacyRows,
+      coverage: { desired: [], subscribed: [], applying: false, available: ['gulf'] },
+    });
+    const model = _viewerRowModelForTest();
+    assert.deepEqual(model.available, ['gulf']);
+    assert.equal(model.worldwide, true);
+    assert.deepEqual(model.selected, []);
+    assert.equal(shownIds(collection), 2, 'every legacy vessel is drawn, same as before');
   });
 });
 
@@ -330,7 +411,7 @@ test('a server that reports no availability leaves everything drawn and shows no
 });
 
 test('a hidden vessel cannot be selected; hiding the selected vessel clears its selection', () => {
-  withLayer(fakeStorage(), () => {
+  withLayer(fakeStorage({ [AIS_VIEW_REGIONS_KEY]: '["gulf","east-coast"]' }), () => {
     _applyAisFeedSnapshotForTest({}, payload(FIXTURE));
     assert.equal(aisLiveVesselsLayer.selectById('333000001'), false, 'West Coast is hidden');
     assert.equal(aisLiveVesselsLayer.findByQuery('333000001'), null);
@@ -393,15 +474,21 @@ function renderViewer(view, actions = { toggle() {} }, existing = null) {
     globalThis.document = saved;
   }
 }
-const viewOf = (over = {}) => ({ available: ALL, selected: ['gulf', 'east-coast'], shown: 1730, received: 2842, fixedArea: false, ...over });
+const viewOf = (over = {}) => ({ available: ALL, selected: ['gulf', 'east-coast'], worldwide: false, shown: 1730, received: 2842, fixedArea: false, ...over });
+const regionChecks = (box) => all(box, (n) => n.tag === 'input' && n.dataset.regionId !== 'worldwide');
+const worldwideCheck = (box) => all(box, (n) => n.tag === 'input').find((c) => c.dataset.regionId === 'worldwide');
 
-test('the row shows four personal checkboxes with Shown/Hidden text and the shown/received counts', () => {
+test('the row shows Worldwide above four personal checkboxes, with Shown/Hidden text and the shown/received counts', () => {
   const { box } = renderViewer(viewOf());
-  const checks = all(box, (n) => n.tag === 'input');
-  assert.deepEqual(checks.map((c) => c.dataset.regionId), ALL);
+  const all5 = all(box, (n) => n.tag === 'input');
+  assert.deepEqual(all5.map((c) => c.dataset.regionId), ['worldwide', ...ALL], 'Worldwide renders above the four regional rows');
+  const checks = regionChecks(box);
   assert.deepEqual(checks.map((c) => c.checked), [true, true, false, false]);
-  assert.ok(checks.every((c) => c.type === 'checkbox' && !c.disabled));
+  assert.ok(all5.every((c) => c.type === 'checkbox' && !c.disabled));
+  const ww = worldwideCheck(box);
+  assert.equal(ww.checked, false, 'a regional choice is active, not Worldwide');
   assert.match(text(box), /Coverage shown/);
+  assert.match(text(box), /Worldwide \/ All Vessels Hidden/);
   assert.match(text(box), /Gulf of Mexico Shown/);
   assert.match(text(box), /U\.S\. West Coast Hidden/);
   assert.match(text(box), /1,730 shown · 2,842 received/);
@@ -411,9 +498,24 @@ test('the row shows four personal checkboxes with Shown/Hidden text and the show
   assert.equal(all(box, (n) => n.type === 'password').length, 0);
 });
 
+test('Worldwide active: its checkbox is checked and disabled, every region reads Hidden but stays choosable', () => {
+  const { box } = renderViewer(viewOf({ selected: [], worldwide: true, shown: 2842, received: 2842 }));
+  const ww = worldwideCheck(box);
+  assert.equal(ww.checked, true);
+  assert.equal(ww.disabled, true, 'narrow to a region instead of unticking Worldwide directly');
+  const checks = regionChecks(box);
+  assert.ok(checks.every((c) => c.checked === false), 'no region reads as selected while Worldwide is active');
+  assert.ok(checks.every((c) => c.disabled === false), 'but every available region stays clickable, to exit Worldwide');
+  assert.match(text(box), /Worldwide \/ All Vessels Shown/);
+  assert.match(text(box), /Gulf of Mexico Hidden/);
+});
+
 test('legacy server: one available region, the rest visibly "Not covered" and disabled', () => {
   const { box } = renderViewer(viewOf({ available: ['gulf'], selected: ['gulf'], shown: 42, received: 42, fixedArea: true }));
-  const checks = all(box, (n) => n.tag === 'input');
+  const ww = worldwideCheck(box);
+  assert.equal(ww.checked, false);
+  assert.equal(ww.disabled, false, 'Worldwide itself is unaffected by which regions this server covers');
+  const checks = regionChecks(box);
   assert.deepEqual(checks.map((c) => c.checked), [true, false, false, false]);
   assert.deepEqual(checks.map((c) => c.disabled), [true, true, true, true], 'the only region cannot be turned off; the others are not covered');
   assert.match(text(box), /Coverage available from server: Gulf of Mexico/);
@@ -424,7 +526,7 @@ test('legacy server: one available region, the rest visibly "Not covered" and di
 
 test('all-four server: every region is selectable', () => {
   const { box } = renderViewer(viewOf({ selected: ALL }));
-  assert.ok(all(box, (n) => n.tag === 'input').every((c) => c.checked && !c.disabled));
+  assert.ok(regionChecks(box).every((c) => c.checked && !c.disabled));
 });
 
 test('one remaining region cannot be unticked (disabled with an explanation)', () => {
@@ -459,7 +561,7 @@ test('the viewer filter needs no credential, writes nothing but region IDs, and 
   const source = read('./aisViewFilter.js').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.equal(/fetch\(|XMLHttpRequest|sendBeacon|WebSocket|ais-regions|admin|token|password|cookie/i.test(source), false);
   assert.equal(/sessionStorage|indexedDB/.test(source), false);
-  assert.equal((source.match(/setItem\(/g) || []).length, 1, 'one write: the region IDs');
+  assert.equal((source.match(/setItem\(/g) || []).length, 2, 'two writes to the same key: a region list, or the Worldwide sentinel');
   const layer = read('./aisLiveVessels.js').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.equal(/ownerCoverage|ownerSignInDialog|x-gev-admin-token|AIS_REGIONS_ADMIN_TOKEN/.test(layer), false);
   assert.equal(/ais-regions/.test(layer), false, 'the layer never names the coverage-write endpoint');
