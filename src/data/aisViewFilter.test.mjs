@@ -450,6 +450,7 @@ function makeNode(tag) {
     setAttribute(name, value) { node.attributes[name] = String(value); },
     getAttribute: (name) => (name in node.attributes ? node.attributes[name] : null),
     change() { for (const fn of node.listeners.change || []) fn({}); },
+    click() { for (const fn of node.listeners.click || []) fn({}); },
   };
   return node;
 }
@@ -508,6 +509,50 @@ test('Worldwide active: its checkbox is checked and disabled, every region reads
   assert.ok(checks.every((c) => c.disabled === false), 'but every available region stays clickable, to exit Worldwide');
   assert.match(text(box), /Worldwide \/ All Vessels Shown/);
   assert.match(text(box), /Gulf of Mexico Hidden/);
+});
+
+test('the regional filters are collapsed by default; Worldwide stays visible regardless', () => {
+  const { box } = renderViewer(viewOf());
+  const disclosure = byClass(box, 'data-toggle-viewer-disclosure')[0];
+  const group = byClass(box, 'data-toggle-viewer-regions')[0];
+  assert.ok(disclosure, 'a disclosure control exists');
+  assert.equal(disclosure.getAttribute('aria-expanded'), 'false', 'collapsed by default');
+  assert.equal(group.hidden, true, 'the four regional rows start hidden');
+  assert.match(text(box), /Regional filters/);
+  assert.equal(worldwideCheck(box).hidden, false, 'Worldwide is never hidden by the disclosure');
+  assert.match(text(box), /Worldwide \/ All Vessels/, 'Worldwide text renders regardless of the collapsed section');
+});
+
+test('the disclosure toggles visibility only - it never asks the layer for anything', () => {
+  const asked = [];
+  const { box } = renderViewer(viewOf(), { toggle: (...args) => asked.push(['toggle', ...args]), selectWorldwide: (...args) => asked.push(['selectWorldwide', ...args]) });
+  const disclosure = byClass(box, 'data-toggle-viewer-disclosure')[0];
+  const group = byClass(box, 'data-toggle-viewer-regions')[0];
+  disclosure.click();
+  assert.equal(disclosure.getAttribute('aria-expanded'), 'true', 'expanded');
+  assert.equal(group.hidden, false, 'the four regional rows are now visible');
+  disclosure.click();
+  assert.equal(disclosure.getAttribute('aria-expanded'), 'false', 'collapsed again');
+  assert.equal(group.hidden, true);
+  assert.deepEqual(asked, [], 'expanding/collapsing never calls toggle() or selectWorldwide()');
+});
+
+test('selected regional preferences are unaffected by expanding or collapsing the disclosure', () => {
+  const { box, mgr, controls } = renderViewer(viewOf({ selected: ['gulf', 'west-coast'] }));
+  const disclosure = byClass(box, 'data-toggle-viewer-disclosure')[0];
+  const checkedBefore = regionChecks(box).map((c) => c.checked);
+  disclosure.click(); // expand
+  assert.deepEqual(regionChecks(box).map((c) => c.checked), checkedBefore, 'expanding changes nothing about the checkboxes');
+  // A resync (e.g. the 2s poll) while expanded must not reset the disclosure.
+  const saved = globalThis.document;
+  globalThis.document = { createElement: makeNode };
+  try {
+    mgr._syncRowViewer(box, { ...controls, viewer: { ...controls.viewer, view: viewOf({ selected: ['gulf', 'west-coast'], shown: 1234 }) } });
+  } finally { globalThis.document = saved; }
+  assert.equal(disclosure.getAttribute('aria-expanded'), 'true', 'a resync does not re-collapse an expanded section');
+  assert.deepEqual(regionChecks(box).map((c) => c.checked), checkedBefore);
+  disclosure.click(); // collapse
+  assert.deepEqual(regionChecks(box).map((c) => c.checked), checkedBefore, 'collapsing changes nothing about the checkboxes either');
 });
 
 test('legacy server: one available region, the rest visibly "Not covered" and disabled', () => {

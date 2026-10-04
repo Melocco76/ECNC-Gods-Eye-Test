@@ -10373,6 +10373,18 @@ body.recording-mode :is(#flight-details-btn, #flight-details-panel) { display: n
 .data-toggle-viewer-state { margin-left: auto; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
 .data-toggle-viewer-count { font-variant-numeric: tabular-nums; }
 .data-toggle-viewer-note { font-style: italic; }
+/* Regional filters collapse behind this disclosure by default; Worldwide / All Vessels
+   (above it, never collapsed) is the primary state. Reuses the Layers drawer's own
+   rotating-chevron pattern (.drawer-chevron), just sized to this row's compact text. */
+.data-toggle-viewer-disclosure {
+  display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0;
+  border: 0; background: none; color: var(--text-secondary); font: inherit; text-align: left; cursor: pointer;
+}
+.data-toggle-viewer-disclosure:hover { color: var(--text-primary); }
+.data-toggle-viewer-disclosure:focus-visible { outline: 2px solid var(--accent, #4fc3f7); outline-offset: 2px; }
+.data-toggle-viewer-disclosure .drawer-chevron { font-size: 16px; }
+.data-toggle-viewer-disclosure[aria-expanded='true'] .drawer-chevron { transform: rotate(90deg); }
+.data-toggle-viewer-regions[hidden] { display: none; }
 
 .owner-dialog {
   position: fixed; top: 72px; left: 50%; transform: translateX(-50%); z-index: 10050;
@@ -10404,6 +10416,7 @@ body.recording-mode :is(#flight-details-btn, #flight-details-panel) { display: n
   .data-toggle-viewer { font-size: 13px; }
   .data-toggle-viewer-region { min-height: 44px; }
   .data-toggle-viewer-check { width: 24px; height: 24px; }
+  .data-toggle-viewer-disclosure { min-height: 44px; }
   .owner-dialog { top: 64px; max-height: calc(100vh - 150px); }
   .owner-dialog-input { min-height: 44px; font-size: 16px; }
   .owner-dialog-btn { min-height: 44px; }

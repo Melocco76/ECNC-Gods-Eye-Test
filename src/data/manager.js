@@ -113,6 +113,9 @@ export function layerFeedState(stats = {}) {
   return 'nominal';
 }
 
+/** Unique suffix for the AIS viewer row's regional-disclosure id (aria-controls target). */
+let _viewerDisclosureSeq = 0;
+
 /**
  * DataLayerManager — Manages registration, toggling, and update loops
  * for real-time data overlays on the CesiumJS globe.
@@ -2354,13 +2357,9 @@ export class DataLayerManager {
       const heading = document.createElement('span');
       heading.className = 'data-toggle-viewer-heading';
       heading.textContent = 'Coverage shown';
-      const group = document.createElement('div');
-      group.className = 'data-toggle-viewer-regions';
-      group.setAttribute('role', 'group');
-      group.setAttribute('aria-label', 'Maritime regions to show on this device');
-      // Worldwide / All Vessels sits above the four regional rows: no viewer-side
-      // filter at all, drawing everything the (unchanged) backend subscription
-      // delivers. Reuses the same row markup/styling as a regional checkbox.
+      // Worldwide / All Vessels is always visible: no viewer-side filter at all,
+      // drawing everything the (unchanged) backend subscription delivers. It sits
+      // outside the collapsible group below, never hidden by the disclosure.
       const worldwideRow = document.createElement('label');
       worldwideRow.className = 'data-toggle-viewer-region';
       const worldwideInput = document.createElement('input');
@@ -2377,8 +2376,37 @@ export class DataLayerManager {
       const worldwideState = document.createElement('span');
       worldwideState.className = 'data-toggle-viewer-state';
       worldwideRow.append(worldwideInput, worldwideName, worldwideState);
-      group.appendChild(worldwideRow);
       refs.worldwide = { input: worldwideInput, state: worldwideState };
+
+      // The four regional filters are a visually secondary, collapsed-by-default
+      // disclosure: Worldwide is the primary/default state, so they stay out of the
+      // way until asked for. Collapsing/expanding is purely local UI state - it
+      // never touches `_viewerActions` and so never changes what is drawn.
+      const regionsId = `data-toggle-viewer-regions-${++_viewerDisclosureSeq}`;
+      const disclosure = document.createElement('button');
+      disclosure.type = 'button';
+      disclosure.className = 'data-toggle-viewer-disclosure';
+      disclosure.setAttribute('aria-expanded', 'false');
+      disclosure.setAttribute('aria-controls', regionsId);
+      const disclosureLabel = document.createElement('span');
+      disclosureLabel.textContent = 'Regional filters';
+      const disclosureChevron = document.createElement('span');
+      disclosureChevron.className = 'material-symbols-outlined drawer-chevron';
+      disclosureChevron.setAttribute('aria-hidden', 'true');
+      disclosureChevron.textContent = 'chevron_right';
+      disclosure.append(disclosureLabel, disclosureChevron);
+      disclosure.addEventListener('click', () => {
+        const expanded = disclosure.getAttribute('aria-expanded') === 'true';
+        disclosure.setAttribute('aria-expanded', String(!expanded));
+        group.hidden = expanded;
+      });
+
+      const group = document.createElement('div');
+      group.id = regionsId;
+      group.className = 'data-toggle-viewer-regions';
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', 'Maritime regions to show on this device');
+      group.hidden = true; // collapsed by default: Worldwide is the primary state
       for (const region of catalogue) {
         const row = document.createElement('label');
         row.className = 'data-toggle-viewer-region';
@@ -2404,7 +2432,9 @@ export class DataLayerManager {
       count.className = 'data-toggle-viewer-count';
       const note = document.createElement('span');
       note.className = 'data-toggle-viewer-note';
-      node.append(heading, group, count, note);
+      node.append(heading, worldwideRow, disclosure, group, count, note);
+      refs.disclosure = disclosure;
+      refs.regionsGroup = group;
       refs.count = count;
       refs.note = note;
       node._viewerRefs = refs;
