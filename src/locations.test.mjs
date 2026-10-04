@@ -598,6 +598,18 @@ test('search without an authority hook preserves the existing caller contract', 
   assert.equal(viewer.flights.length, 1);
 });
 
+// Street View's accuracy correction prefers the exact geocoded coordinate
+// over a reconstructed camera-center point — it has to actually be returned.
+test('a successful search additively exposes the exact geocoded lat/lng, unchanged label/navigationMode/rangeM', async () => {
+  const viewer = stubViewer();
+  const result = await runSearch(viewer, {});
+  assert.equal(result.navigationMode, 'city-overview');
+  assert.equal(result.label, AUSTIN_RESULT.formatted_address);
+  assert.equal(result.rangeM, null);
+  assert.equal(result.lat, AUSTIN_RESULT.geometry.location.lat);
+  assert.equal(result.lng, AUSTIN_RESULT.geometry.location.lng);
+});
+
 // Geocoding cannot run from the browser against a referrer-restricted key (a
 // hard Google product limitation), so the client must call the same-origin
 // server proxy — never maps.googleapis.com directly.

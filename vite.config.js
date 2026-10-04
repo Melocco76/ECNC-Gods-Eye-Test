@@ -4823,23 +4823,31 @@ export async function fetchCctvImageFromUpstream(url, {
  * @param {number} [point.radius] Search radius in meters for the nearest panorama.
  *   Optional and omitted from the request unless finite — CCTV's call site never
  *   passes this, so CCTV keeps Google's own default search radius unchanged.
+ * @param {string} [point.pano] Exact panorama id (from streetViewMetadataLookup).
+ *   When given, the request addresses that panorama directly via pano= instead
+ *   of location=+radius=, so it can never resolve to a different panorama than
+ *   the one metadata already selected. CCTV's call site never passes this.
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl=fetch]
  * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
  */
 export async function streetViewFallback({
-  lat, lon, heading, fov, pitch, radius,
+  lat, lon, heading, fov, pitch, radius, pano,
 }, { fetchImpl = fetch } = {}) {
   const streetViewKey = resolveGoogleMapsServerKey();
   if (!streetViewKey || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   try {
     const sv = new URL('https://maps.googleapis.com/maps/api/streetview');
     sv.searchParams.set('size', '960x540');
-    sv.searchParams.set('location', `${lat},${lon}`);
+    if (typeof pano === 'string' && pano.length > 0) {
+      sv.searchParams.set('pano', pano);
+    } else {
+      sv.searchParams.set('location', `${lat},${lon}`);
+      if (Number.isFinite(radius)) sv.searchParams.set('radius', String(radius));
+    }
     sv.searchParams.set('heading', String(Number.isFinite(heading) ? heading : 0));
     sv.searchParams.set('fov', String(Number.isFinite(fov) ? Math.max(20, Math.min(120, fov)) : 80));
     sv.searchParams.set('pitch', String(Number.isFinite(pitch) ? Math.max(-40, Math.min(20, pitch)) : 0));
-    if (Number.isFinite(radius)) sv.searchParams.set('radius', String(radius));
     sv.searchParams.set('source', 'outdoor');
     sv.searchParams.set('return_error_code', 'true');
     sv.searchParams.set('key', streetViewKey);
@@ -4856,6 +4864,83 @@ export async function streetViewFallback({
       body: Buffer.from(await svResp.arrayBuffer()),
       contentType: svType,
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Great-circle distance in meters (haversine). A local copy, not an import
+ * from a src/ frontend module — vite.config.js keeps its own small geo math
+ * per route (see mapWeatherCard.js's greatCircleM, cctv.js's own haversine)
+ * rather than reaching across the build-config/frontend boundary.
+ */
+export function haversineDistanceM(lat1, lon1, lat2, lon2) {
+  const toRad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toRad;
+  const dLon = (lon2 - lon1) * toRad;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Initial great-circle bearing in degrees (0-359), FROM point 1 TO point 2.
+ * Used to point a roadside Street View panorama toward the requested target,
+ * not the reverse — swapping the argument order would face the camera away
+ * from the property instead of at it.
+ */
+export function bearingDeg(fromLat, fromLon, toLat, toLon) {
+  const toRad = Math.PI / 180;
+  const p1 = fromLat * toRad;
+  const p2 = toLat * toRad;
+  const dLon = (toLon - fromLon) * toRad;
+  const y = Math.sin(dLon) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dLon);
+  const deg = Math.atan2(y, x) * 180 / Math.PI;
+  return (deg + 360) % 360;
+}
+
+/**
+ * Street View metadata lookup — JSON only, no image bytes — used to learn
+ * where Google actually selects a panorama before spending an image request
+ * on it. User-facing /api/streetview only; CCTV never calls this.
+ *
+ * Requires GOOGLE_MAPS_SERVER_KEY (server-side only, via the same
+ * resolveGoogleMapsServerKey() streetViewFallback() uses). Returns null
+ * (never throws) when no key is configured, coordinates are not finite, the
+ * request fails, or Google reports no panorama within range (status !== OK).
+ *
+ * @param {object} point
+ * @param {number} point.lat
+ * @param {number} point.lon
+ * @param {number} [point.radius] Search radius in meters; omitted means Google's own default.
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl=fetch]
+ * @returns {Promise<{panoId:string, lat:number, lon:number}|null>}
+ */
+export async function streetViewMetadataLookup({ lat, lon, radius }, { fetchImpl = fetch } = {}) {
+  const key = resolveGoogleMapsServerKey();
+  if (!key || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  try {
+    const meta = new URL('https://maps.googleapis.com/maps/api/streetview/metadata');
+    meta.searchParams.set('location', `${lat},${lon}`);
+    if (Number.isFinite(radius)) meta.searchParams.set('radius', String(radius));
+    meta.searchParams.set('source', 'outdoor');
+    meta.searchParams.set('key', key);
+
+    const resp = await fetchImpl(meta.toString(), {
+      headers: { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' },
+      signal: AbortSignal.timeout(CCTV_FRAME_FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const panoLat = data?.location?.lat;
+    const panoLon = data?.location?.lng;
+    const panoId = data?.pano_id;
+    if (data?.status !== 'OK' || typeof panoId !== 'string' || !panoId
+      || !Number.isFinite(panoLat) || !Number.isFinite(panoLon)) return null;
+    return { panoId, lat: panoLat, lon: panoLon };
   } catch {
     return null;
   }
@@ -8549,8 +8634,22 @@ const STREET_VIEW_USER_SEARCH_RADIUS_M = 150;
  * shared rate-limit budget, and changes here can never affect CCTV's own
  * fallback chain. Reuses the exact same streetViewFallback() the CCTV frame
  * route's fallback chain uses (see cctvProxy above), so both paths request
- * Google identically (aside from this route's fixed search radius) and can
- * never drift from each other otherwise.
+ * Google identically and can never drift from each other.
+ *
+ * Two request shapes:
+ *   - No `pano`: first open at a location. Looks up the nearest outdoor
+ *     panorama via streetViewMetadataLookup() within
+ *     STREET_VIEW_USER_SEARCH_RADIUS_M, computes the bearing FROM that
+ *     panorama TO the requested point as the initial heading (unless the
+ *     caller passed an explicit heading), and requests the image by that
+ *     exact pano_id. Returns X-Street-View-Heading, X-Street-View-Pano-Id,
+ *     and X-Street-View-Snap-Distance-M.
+ *   - `pano` given: a LEFT/RIGHT look-around on an already-resolved
+ *     panorama. Skips metadata entirely and requests that exact pano_id with
+ *     the caller's explicit heading, so the view can never drift to a
+ *     different panorama mid-session. Returns X-Street-View-Heading and
+ *     X-Street-View-Pano-Id (snap distance is unchanged from the open call
+ *     and not recomputed).
  *
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl] Injectable for tests; real fetch otherwise.
@@ -8577,16 +8676,65 @@ export function streetViewProxy({ fetchImpl = null } = {}) {
         res.end(JSON.stringify({ error: 'Valid lat and lon are required' }));
         return;
       }
-      // Optional; streetViewFallback() applies the current defaults (heading 0,
-      // fov 80, pitch 0) and clamps (fov 20-120, pitch -40..20) for anything
-      // missing or non-finite — the exact same rule the CCTV fallback uses.
-      const heading = requiredFiniteQueryNumber(url.searchParams, 'heading');
+      // Optional; streetViewFallback() applies the current defaults (fov 80,
+      // pitch 0) and clamps (fov 20-120, pitch -40..20) for anything missing
+      // or non-finite — the exact same rule the CCTV fallback uses. heading
+      // is handled below: explicit when given, computed otherwise.
+      const explicitHeading = requiredFiniteQueryNumber(url.searchParams, 'heading');
       const fov = requiredFiniteQueryNumber(url.searchParams, 'fov');
       const pitch = requiredFiniteQueryNumber(url.searchParams, 'pitch');
+      const pano = url.searchParams.get('pano') || null;
+      const effectiveFetch = fetchImpl || fetch;
       try {
+        if (pano) {
+          // A LEFT/RIGHT look-around on the panorama the open call already
+          // resolved: go straight to the image, no metadata re-lookup, so
+          // the view can never silently drift to a different panorama.
+          const heading = Number.isFinite(explicitHeading) ? explicitHeading : 0;
+          const sv = await streetViewFallback(
+            { lat, lon, heading, fov, pitch, pano },
+            { fetchImpl: effectiveFetch },
+          );
+          if (!sv?.ok) {
+            res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ error: 'Street View unavailable here' }));
+            return;
+          }
+          res.writeHead(200, {
+            'Content-Type': sv.contentType,
+            'Cache-Control': 'no-store',
+            'X-Street-View-Source': 'static',
+            'X-Street-View-Heading': String(Math.round(heading)),
+            'X-Street-View-Pano-Id': pano,
+          });
+          res.end(sv.body);
+          return;
+        }
+
+        // First open at this location: resolve the nearest outdoor panorama,
+        // then face it toward the requested point.
+        const meta = await streetViewMetadataLookup(
+          { lat, lon, radius: STREET_VIEW_USER_SEARCH_RADIUS_M },
+          { fetchImpl: effectiveFetch },
+        );
+        if (!meta) {
+          res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: 'Street View unavailable here' }));
+          return;
+        }
+        const snapDistanceM = haversineDistanceM(lat, lon, meta.lat, meta.lon);
+        // Defensive: metadata's own radius already bounds this, but never
+        // present a panorama outside the declared search radius as a hit.
+        if (snapDistanceM > STREET_VIEW_USER_SEARCH_RADIUS_M) {
+          res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: 'Street View unavailable here' }));
+          return;
+        }
+        const computedHeading = bearingDeg(meta.lat, meta.lon, lat, lon);
+        const heading = Number.isFinite(explicitHeading) ? explicitHeading : computedHeading;
         const sv = await streetViewFallback(
-          { lat, lon, heading, fov, pitch, radius: STREET_VIEW_USER_SEARCH_RADIUS_M },
-          { fetchImpl: fetchImpl || fetch },
+          { lat, lon, heading, fov, pitch, pano: meta.panoId },
+          { fetchImpl: effectiveFetch },
         );
         if (!sv?.ok) {
           res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -8597,6 +8745,9 @@ export function streetViewProxy({ fetchImpl = null } = {}) {
           'Content-Type': sv.contentType,
           'Cache-Control': 'no-store',
           'X-Street-View-Source': 'static',
+          'X-Street-View-Heading': String(Math.round(heading)),
+          'X-Street-View-Pano-Id': meta.panoId,
+          'X-Street-View-Snap-Distance-M': String(Math.round(snapDistanceM)),
         });
         res.end(sv.body);
       } catch (error) {

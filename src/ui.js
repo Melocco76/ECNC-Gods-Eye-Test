@@ -2458,6 +2458,10 @@ export class StyleManager {
     // _activeLocationId instead; a search has no preset record, so this is the
     // only thing the mini-status can report for it.
     this._searchedLocationLabel = null;
+    // Exact geocoded {lat, lng} of that same search, for Street View to prefer
+    // over a reconstructed camera-center point. Lives and dies with the label
+    // above — same invalidation seams, nothing new to track.
+    this._searchedLocationCoord = null;
     this._trafficSyncFeedbackState = createTrafficSyncFeedbackState();
     this._trafficTransitionTimer = null;
     this._lastTrafficChipUpdateAt = 0;
@@ -9426,6 +9430,9 @@ export class StyleManager {
             // through "Location: --" on the way to the searched place.
             this._searchedLocationLabel = destination.label || query;
             this._setActiveLocation(null);
+            this._searchedLocationCoord = (Number.isFinite(destination.lat) && Number.isFinite(destination.lng))
+              ? { lat: destination.lat, lng: destination.lng }
+              : null;
             this._currentPoi = null;
             this._collapsePOIRow();
             this._updateLocationMiniStatus();
@@ -9620,7 +9627,18 @@ export class StyleManager {
   clearSearchedLocation() {
     if (this._searchedLocationLabel === null) return;
     this._searchedLocationLabel = null;
+    this._searchedLocationCoord = null;
     this._updateLocationMiniStatus();
+  }
+
+  /**
+   * The exact geocoded {lat, lng} of the last free-text search, or null if
+   * none is current. Public so Street View can prefer it over a reconstructed
+   * camera-center point; shares every invalidation seam with the label above.
+   * @returns {{lat:number,lng:number}|null}
+   */
+  getSearchedLocationCoord() {
+    return this._searchedLocationCoord;
   }
 
   /**
@@ -9634,6 +9652,7 @@ export class StyleManager {
     // free-text destination has been superseded. Clearing only on a real id
     // leaves the search path's own _setActiveLocation(null) untouched.
     if (locationId) this._searchedLocationLabel = null;
+    if (locationId) this._searchedLocationCoord = null;
     this._locationPills.querySelectorAll('.location-pill').forEach(pill => {
       pill.classList.toggle('active', pill.dataset.locationId === locationId);
     });

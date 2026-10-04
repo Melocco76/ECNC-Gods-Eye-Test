@@ -43,6 +43,36 @@ test('a free-text search records its destination for the LOCATION mini-status', 
   assert.match(handler, /this\._updateLocationMiniStatus\(\);/);
 });
 
+test('a free-text search also records the exact geocoded coordinate for Street View', () => {
+  const handler = locationSearchHandler();
+  assert.match(
+    handler,
+    /this\._searchedLocationLabel = destination\.label[\s\S]{0,400}?this\._searchedLocationCoord = \(Number\.isFinite\(destination\.lat\) && Number\.isFinite\(destination\.lng\)\)/,
+  );
+});
+
+test('clearSearchedLocation and a new preset location both forget the searched coordinate too', () => {
+  const clearStart = ui.indexOf('  clearSearchedLocation() {');
+  assert.ok(clearStart > 0, 'clearSearchedLocation is missing');
+  assert.match(
+    ui.slice(clearStart, ui.indexOf('\n  }', clearStart)),
+    /this\._searchedLocationLabel = null;\s*\n\s*this\._searchedLocationCoord = null;/,
+  );
+
+  const setActiveStart = ui.indexOf('  _setActiveLocation(locationId) {');
+  assert.ok(setActiveStart > 0, '_setActiveLocation is missing');
+  const setActiveBody = ui.slice(setActiveStart, ui.indexOf('\n  }', setActiveStart));
+  assert.match(setActiveBody, /if \(locationId\) this\._searchedLocationLabel = null;/);
+  assert.match(setActiveBody, /if \(locationId\) this\._searchedLocationCoord = null;/);
+});
+
+test('getSearchedLocationCoord is a public seam returning the private field', () => {
+  assert.match(
+    ui,
+    /\n {2}getSearchedLocationCoord\(\) \{\n\s*return this\._searchedLocationCoord;\n {2}\}/,
+  );
+});
+
 test('the mini-status reads its copy from the shared formatter', () => {
   assert.match(ui, /import \{ locationMiniStatus \} from '\.\/locationStatus\.js';/);
   const start = ui.indexOf('  _updateLocationMiniStatus() {');

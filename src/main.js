@@ -200,7 +200,9 @@ async function init() {
     const weatherEffects = null;
     const cockpitCloudEffects = initCockpitCloudEffects(viewer);
     const mapWeatherCard = initMapWeatherCard(viewer);
-    const streetViewCard = initStreetViewCard(viewer);
+    const streetViewCard = initStreetViewCard(viewer, {
+      getSearchedTarget: () => styleManager.getSearchedLocationCoord(),
+    });
 
     // If no share link state, do default fly-to Winston-Salem
     if (!styleManager.hasShareState) {
