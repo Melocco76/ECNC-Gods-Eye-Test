@@ -555,16 +555,19 @@
     <div class="cockpit-help">ESC EXIT <span>·</span> C TOGGLE</div>
   </section>
 
-  <!-- Persistent top mode switch (Cockpit only): a clearer, more discoverable
-       counterpart to EXIT COCKPIT below, not a replacement for it. MAP calls
-       the exact same canonical exit() the bottom button and Escape/C use;
-       COCKPIT is a disabled "you are here" indicator, never an entry point. -->
-  <nav id="cockpit-mode-switch" class="cockpit-mode-switch" aria-label="Map or Cockpit view" hidden>
-    <button id="cockpit-mode-switch-map" type="button" class="cockpit-mode-switch-btn" aria-pressed="false" aria-label="Switch to Map view" title="Switch to Map view">
+  <!-- Persistent top MAP|COCKPIT mode switch: always visible, in both modes. A
+       clearer, more discoverable counterpart to EXIT COCKPIT below, never a
+       replacement for it. MAP calls the exact same canonical exit() the bottom
+       button and Escape/C use; COCKPIT calls the exact same canonical enter()
+       #cockpit-entry already uses, for whatever is currently tracked. Default
+       markup here is the normal-Map/nothing-tracked-yet baseline; syncModeSwitch()
+       in ui.js keeps both buttons' aria-pressed/disabled/title current from there. -->
+  <nav id="cockpit-mode-switch" class="cockpit-mode-switch" aria-label="Map or Cockpit view">
+    <button id="cockpit-mode-switch-map" type="button" class="cockpit-mode-switch-btn" aria-pressed="true" aria-label="Map view (current)" title="Map view (current)" disabled>
       <span class="material-symbols-outlined" aria-hidden="true">map</span>
       <span>MAP</span>
     </button>
-    <button id="cockpit-mode-switch-cockpit" type="button" class="cockpit-mode-switch-btn" aria-pressed="true" aria-label="Cockpit view (current)" title="Cockpit view (current)" disabled>
+    <button id="cockpit-mode-switch-cockpit" type="button" class="cockpit-mode-switch-btn" aria-pressed="false" aria-label="Switch to Cockpit view. Select an aircraft first." title="Select an aircraft first" disabled>
       <span class="material-symbols-outlined" aria-hidden="true">flight</span>
       <span>COCKPIT</span>
     </button>
@@ -771,8 +774,10 @@
     </div>
   </div>
 
-  <!-- CCTV Coverage Panel -->
-  <div id="cctv-panel" class="panel-collapsible collapsed" data-panel-id="cctv-panel">
+  <!-- CCTV Coverage Panel. Hidden by default: _renderCctvState() in ui.js owns
+       visibility entirely, keyed to the CCTV layer's own ON/OFF state, so the
+       launcher never clutters the right rail before the layer is turned on. -->
+  <div id="cctv-panel" class="panel-collapsible collapsed" data-panel-id="cctv-panel" hidden>
     <div class="panel-glow"></div>
     <div class="cctv-panel-inner">
       <div class="panel-header">

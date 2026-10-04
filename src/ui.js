@@ -685,11 +685,14 @@ class CockpitViewController {
     this._tr3bSignature = null;
     this.mapViewButton = document.getElementById('map-view-switch');
     this.resetGlobeButton = document.getElementById('cockpit-reset-globe');
-    // Persistent top MAP|COCKPIT switch - a more discoverable companion to
-    // mapViewButton (EXIT COCKPIT), never a replacement. MAP calls this exact
-    // same exit() below; COCKPIT is a disabled "you are here" indicator.
+    // Persistent top MAP|COCKPIT switch, visible in BOTH modes - a more
+    // discoverable companion to mapViewButton (EXIT COCKPIT) and cockpit-entry
+    // (COCKPIT), never a replacement for either. MAP calls the exact same
+    // exit() mapViewButton uses; COCKPIT calls the exact same enter() the
+    // Contacts panel's own entry button uses. See syncModeSwitch().
     this.modeSwitch = document.getElementById('cockpit-mode-switch');
     this.modeSwitchMapButton = document.getElementById('cockpit-mode-switch-map');
+    this.modeSwitchCockpitButton = document.getElementById('cockpit-mode-switch-cockpit');
     this.hud = document.getElementById('cockpit-hud');
     this.entryFocusOrigin = null;
     this.callsign = document.getElementById('cockpit-callsign');
@@ -812,6 +815,7 @@ class CockpitViewController {
     this._listen(this.tr3bToggle, 'click', () => this.toggleTrackedTr3b());
     this._listen(this.mapViewButton, 'click', () => this.exit());
     this._listen(this.modeSwitchMapButton, 'click', () => this.exit());
+    this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter());
     this._listen(this.visionPrevious, 'click', () => this.cycleVisionMode(-1));
     this._listen(this.visionCurrent, 'click', () => this.cycleVisionMode(1));
     this._listen(this.visionNext, 'click', () => this.cycleVisionMode(1));
@@ -949,7 +953,43 @@ class CockpitViewController {
     if (this.entry) this.entry.hidden = !available;
     if (this.mapViewButton) this.mapViewButton.hidden = true;
     if (this.resetGlobeButton) this.resetGlobeButton.hidden = true;
-    if (this.modeSwitch) this.modeSwitch.hidden = true;
+    this.syncModeSwitch(available);
+  }
+
+  /**
+   * Keep the persistent top MAP|COCKPIT switch current. Called from syncEntry()
+   * (Map mode, reusing its `available` eligibility calculation) and from
+   * enter()/exit() (the mode itself just changed). MAP and COCKPIT only ever
+   * call the existing canonical exit()/enter() above — this never performs any
+   * entry/exit work of its own, only reflects state.
+   * @param {boolean} available Whether a tracked, eligible aircraft can enter Cockpit right now.
+   */
+  syncModeSwitch(available) {
+    const mapBtn = this.modeSwitchMapButton;
+    const cockpitBtn = this.modeSwitchCockpitButton;
+    if (mapBtn) {
+      const label = this.active ? 'Switch to Map view' : 'Map view (current)';
+      mapBtn.setAttribute('aria-pressed', String(!this.active));
+      // MAP is the disabled "you are here" indicator in Map mode, and the live
+      // exit control in Cockpit mode — exit() itself is also a no-op while
+      // already in Map mode, so this is a visible/accessible mirror of that,
+      // not a second guard it depends on.
+      mapBtn.disabled = !this.active;
+      mapBtn.title = label;
+      mapBtn.setAttribute('aria-label', label);
+    }
+    if (cockpitBtn) {
+      cockpitBtn.setAttribute('aria-pressed', String(this.active));
+      cockpitBtn.disabled = this.active || !available;
+      const label = this.active
+        ? 'Cockpit view (current)'
+        : (available ? 'Switch to Cockpit view' : 'Select an aircraft first');
+      cockpitBtn.title = label;
+      cockpitBtn.setAttribute(
+        'aria-label',
+        this.active || available ? label : 'Switch to Cockpit view. Select an aircraft first.',
+      );
+    }
   }
 
   /**
@@ -1086,7 +1126,8 @@ class CockpitViewController {
     document.body.classList.add('cockpit-mode');
     // Activation writes entry/quick/map visibility directly, bypassing
     // syncEntry's change-only cache — invalidate it so the exit-path
-    // syncEntry re-applies every write (notably re-hiding mapViewButton).
+    // syncEntry re-applies every write (notably re-hiding mapViewButton and
+    // re-deriving the persistent MAP|COCKPIT switch's state via syncModeSwitch).
     this._entryAvailable = undefined;
     if (this.entry) this.entry.hidden = true;
     if (this.tr3bToggle) {
@@ -1095,7 +1136,7 @@ class CockpitViewController {
     }
     if (this.mapViewButton) this.mapViewButton.hidden = false;
     if (this.resetGlobeButton) this.resetGlobeButton.hidden = false;
-    if (this.modeSwitch) this.modeSwitch.hidden = false;
+    this.syncModeSwitch(true);
     if (this.hud) this.hud.hidden = false;
     if (this.signalStream) this.signalStream.hidden = false;
     this.hud?.classList.add('signals-active');
@@ -6543,6 +6584,26 @@ export class StyleManager {
     // from re-expanding a panel the user deliberately collapsed, and timed
     // auto-hop transitions only expand on the first activation so the panel
     // does not pop open on every hop.
+    // The layer's own ON/OFF controls whether the panel exists in the right
+    // rail at all, not merely its collapsed state: a user who never turns CCTV
+    // on should see no CCTV launcher cluttering the rail, and turning it on
+    // should make its controls immediately available with no second manual
+    // expand. Collapse-then-hide (off) and unhide-then-expand (on) keep a
+    // panel that is about to disappear from ever reading as "expanded" to
+    // _syncRightPanelAdaptiveLayout's Tactical exclusivity pass above it.
+    if (this._lastSeenCctvEnabled !== enabled) {
+      this._lastSeenCctvEnabled = enabled;
+      if (this._cctvPanel) {
+        if (enabled) {
+          this._cctvPanel.hidden = false;
+          this.setPanelCollapsed('cctv-panel', false, { explicit: true });
+        } else {
+          this.setPanelCollapsed('cctv-panel', true, { explicit: true });
+          this._cctvPanel.hidden = true;
+        }
+      }
+    }
+
     const effectiveActiveId = enabled ? (activeId || null) : null;
     const isFirstActivation = this._lastSeenCctvActiveId === null;
     if (effectiveActiveId
@@ -6874,7 +6935,10 @@ export class StyleManager {
     const stack = this._rightPanelStack;
     if (!stack) return;
 
-    const panels = [...stack.children].filter((panel) => panel.matches('[data-panel-id]'));
+    // A hidden panel (e.g. CCTV while its layer is off, see _renderCctvState)
+    // must never be counted as expanded, exclusivity-hidden, or given a height
+    // allocation — it does not exist as far as this layout pass is concerned.
+    const panels = [...stack.children].filter((panel) => panel.matches('[data-panel-id]') && !panel.hidden);
     if (!this.hud.visible || this.hud.getVariant() !== 'tactical') {
       for (const panel of panels.filter((item) => item.classList.contains('layout-auto-collapsed'))) {
         panel.classList.remove('collapsed', 'layout-auto-collapsed');

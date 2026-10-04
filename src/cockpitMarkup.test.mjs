@@ -839,95 +839,228 @@ test('voice Cockpit entry refuses when the entry gate is shut', () => {
   assert.match(branch, /Contacts is still starting up/);
 });
 
-test('a persistent top MAP|COCKPIT switch reuses the canonical exit and never duplicates it', () => {
+test('a persistent top MAP|COCKPIT switch is visible in both modes and reuses the canonical enter/exit', () => {
   // 1. The switch exists, lives outside the bottom EXIT COCKPIT nav (a companion,
-  //    not a replacement), and is hidden by default like every other Cockpit-only
-  //    control (map-view-switch, cockpit-reset-globe) until enter() shows it.
+  //    not a replacement), and - unlike mapViewButton/cockpit-reset-globe - is
+  //    NOT hidden by default: it must read in Map mode too.
   const viewSwitcher = html.match(/<nav id="view-switcher"[\s\S]*?<\/nav>/);
   assert.ok(viewSwitcher, 'View switcher is missing');
   assert.doesNotMatch(viewSwitcher[0], /id="cockpit-mode-switch/, 'the new switch must not be folded into the existing bottom nav');
   const modeSwitch = html.match(/<nav id="cockpit-mode-switch"[\s\S]*?<\/nav>/);
   assert.ok(modeSwitch, 'cockpit-mode-switch markup is missing');
-  assert.match(modeSwitch[0], /id="cockpit-mode-switch"[^>]*aria-label="Map or Cockpit view"[^>]*hidden/, 'hidden outside Cockpit, like the other Cockpit-only controls');
+  assert.doesNotMatch(
+    modeSwitch[0].match(/<nav id="cockpit-mode-switch"[^>]*>/)[0],
+    /\bhidden\b/,
+    'the switch itself must never be hidden - it is visible in Map mode too',
+  );
 
-  // 2. COCKPIT reads as the active/current segment and cannot be clicked back
-  //    into itself; MAP is the only live control and is properly a <button>.
+  // 2. Default (Map-mode, nothing tracked yet) markup baseline: MAP reads as
+  //    current and disabled, COCKPIT is visible but disabled with an
+  //    accessible explanation, matching the no-tracked-aircraft case.
   assert.match(
     modeSwitch[0],
-    /id="cockpit-mode-switch-map"[^>]*type="button"[^>]*aria-pressed="false"/,
-    'MAP starts unpressed - COCKPIT is the active segment while the switch is visible at all',
+    /id="cockpit-mode-switch-map"[^>]*type="button"[^>]*aria-pressed="true"[\s\S]*?disabled/,
+    'MAP starts pressed and disabled - it is the current mode and a no-op',
   );
   assert.match(
     modeSwitch[0],
-    /id="cockpit-mode-switch-cockpit"[^>]*type="button"[^>]*aria-pressed="true"[\s\S]*?disabled/,
-    'COCKPIT is the highlighted, non-actionable "you are here" segment',
+    /id="cockpit-mode-switch-cockpit"[^>]*type="button"[^>]*aria-pressed="false"[\s\S]*?title="Select an aircraft first"[\s\S]*?disabled/,
+    'COCKPIT starts visible-but-disabled with the required accessible explanation',
   );
   assert.match(modeSwitch[0], /id="cockpit-mode-switch-map"[\s\S]*?MAP/);
   assert.match(modeSwitch[0], /id="cockpit-mode-switch-cockpit"[\s\S]*?COCKPIT/);
 
   // 3. Clicking MAP calls the exact same exit() the bottom EXIT COCKPIT button
-  //    and Escape/C already use - not a second, parallel exit path.
+  //    and Escape/C already use; clicking COCKPIT calls the exact same enter()
+  //    the Contacts panel's own #cockpit-entry button already uses. Neither is
+  //    a second, parallel implementation.
   assert.match(
     ui,
-    /this\._listen\(this\.mapViewButton, 'click', \(\) => this\.exit\(\)\);\s*\n\s*this\._listen\(this\.modeSwitchMapButton, 'click', \(\) => this\.exit\(\)\);/,
-    'the new MAP control must be wired right beside the existing exit button, to the same exit()',
+    /this\._listen\(this\.mapViewButton, 'click', \(\) => this\.exit\(\)\);\s*\n\s*this\._listen\(this\.modeSwitchMapButton, 'click', \(\) => this\.exit\(\)\);\s*\n\s*this\._listen\(this\.modeSwitchCockpitButton, 'click', \(\) => this\.enter\(\)\);/,
+    'the new MAP/COCKPIT controls must be wired right beside the existing exit/entry buttons, to the same exit()/enter()',
+  );
+  assert.match(
+    ui,
+    /this\._listen\(this\.entry, 'click', \(\) => this\.enter\(\)\);/,
+    'the existing Contacts entry button must still call the same enter()',
   );
 
-  // 4. No duplicate/parallel exit implementation: exit() is declared exactly
-  //    once in CockpitViewController, and the new control's own wiring contains
-  //    none of exit()'s actual teardown steps (it only ever calls exit()).
+  // 4. No duplicate/parallel entry or exit implementation: enter()/exit() are
+  //    each declared exactly once in CockpitViewController, and the new
+  //    control's own wiring/helper contain none of their actual teardown/setup
+  //    steps (they only ever call enter()/exit()).
   assert.equal(
     (ui.match(/\n {2}exit\(\{ restoreTracking = true \} = \{\}\) \{/g) || []).length,
     1,
     'exit() must have exactly one implementation',
   );
+  assert.equal(
+    (ui.match(/\n {2}enter\(\) \{/g) || []).length,
+    1,
+    'enter() must have exactly one implementation',
+  );
   const modeSwitchWiring = ui.slice(
     ui.indexOf("this.modeSwitch = document.getElementById('cockpit-mode-switch');"),
-    ui.indexOf("this._listen(this.modeSwitchMapButton, 'click', () => this.exit());")
-      + "this._listen(this.modeSwitchMapButton, 'click', () => this.exit());".length,
+    ui.indexOf("this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter());")
+      + "this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter());".length,
   );
   assert.doesNotMatch(
     modeSwitchWiring,
-    /cockpit-mode'\)|trackedEntity = null|releaseContinuousRender\('cockpit'\)/,
-    'the switch must never reimplement any piece of exit() teardown itself',
+    /cockpit-mode'\)|trackedEntity = null|releaseContinuousRender\('cockpit'\)|holdContinuousRender\('cockpit'\)|viewer\.trackedEntity = undefined/,
+    'the switch must never reimplement any piece of enter()/exit() teardown or setup itself',
+  );
+  const syncModeSwitch = ui.match(/\n {2}syncModeSwitch\(available\) \{([\s\S]*?)\n {2}\}/);
+  assert.ok(syncModeSwitch, 'syncModeSwitch() is missing');
+  assert.doesNotMatch(
+    syncModeSwitch[1],
+    /\.enter\(\)|\.exit\(\)|cockpit-mode'\)|trackedEntity/,
+    'syncModeSwitch must only ever reflect state, never perform entry/exit or touch tracking itself',
   );
 
-  // 5. Shown/hidden exactly where mapViewButton and resetGlobeButton already are:
-  //    enter() reveals it, syncEntry() (map mode / entry-availability sync, which
-  //    only ever runs while NOT active) hides it again.
+  // 5. The shared helper is reused from exactly the three places the existing
+  //    exit controls are already shown/hidden from: enter(), exit() (via its
+  //    existing syncEntry() call, after enter() invalidates the cache so that
+  //    call is never skipped), and syncEntry()'s own change-only availability
+  //    branch, reusing its existing `available` calculation and active-mode guard.
   const enter = ui.match(/\n  enter\(\) \{([\s\S]*?)\n  \}\n\n  exit\(/);
   assert.ok(enter, 'enter() is missing');
   assert.match(
     enter[1],
-    /if \(this\.mapViewButton\) this\.mapViewButton\.hidden = false;\s*\n\s*if \(this\.resetGlobeButton\) this\.resetGlobeButton\.hidden = false;\s*\n\s*if \(this\.modeSwitch\) this\.modeSwitch\.hidden = false;/,
-    'entering Cockpit must reveal the switch alongside the existing exit controls',
+    /if \(this\.mapViewButton\) this\.mapViewButton\.hidden = false;\s*\n\s*if \(this\.resetGlobeButton\) this\.resetGlobeButton\.hidden = false;\s*\n\s*this\.syncModeSwitch\(true\);/,
+    'entering Cockpit must sync the switch alongside the existing exit controls',
   );
+  assert.match(
+    enter[1],
+    /this\._entryAvailable = undefined;/,
+    'entry must invalidate the cache so the post-exit syncEntry() call below is never skipped',
+  );
+  const exit = ui.match(/\n  exit\(\{ restoreTracking = true \} = \{\}\) \{([\s\S]*?)\n  \}\n\n  update\(\)/);
+  assert.ok(exit, 'exit() is missing');
+  assert.match(exit[1], /this\.syncEntry\(\);/, 'exit must re-derive the switch state through the same syncEntry() path');
   const syncEntry = ui.match(/\n  syncEntry\(\) \{([\s\S]*?)\n  \}\n\n/);
   assert.ok(syncEntry, 'syncEntry() is missing');
-  assert.match(syncEntry[1], /if \(this\.active\) return;/, 'this hide path only ever runs outside Cockpit mode');
+  assert.match(syncEntry[1], /if \(this\.active\) return;/, 'this sync path only ever runs outside Cockpit mode');
   assert.match(
     syncEntry[1],
-    /if \(this\.mapViewButton\) this\.mapViewButton\.hidden = true;\s*\n\s*if \(this\.resetGlobeButton\) this\.resetGlobeButton\.hidden = true;\s*\n\s*if \(this\.modeSwitch\) this\.modeSwitch\.hidden = true;/,
-    'leaving/staying outside Cockpit must hide the switch alongside the existing exit controls',
+    /const available = !!\(this\.isEntryAllowed\(\) && trackedContact\);/,
+    'the switch must reuse this exact existing eligibility calculation, not a second one',
+  );
+  assert.match(
+    syncEntry[1],
+    /if \(this\.mapViewButton\) this\.mapViewButton\.hidden = true;\s*\n\s*if \(this\.resetGlobeButton\) this\.resetGlobeButton\.hidden = true;\s*\n\s*this\.syncModeSwitch\(available\);/,
+    'Map mode must sync the switch (never hide it) alongside the existing exit controls, from the same `available`',
   );
 
+  // 6. The sync helper itself: active/aria/disabled/title are each derived from
+  //    `this.active` and `available` only - COCKPIT's disabled explanation
+  //    text is exactly what was asked for.
+  assert.match(syncModeSwitch[1], /mapBtn\.setAttribute\('aria-pressed', String\(!this\.active\)\);/);
+  assert.match(syncModeSwitch[1], /mapBtn\.disabled = !this\.active;/);
+  assert.match(syncModeSwitch[1], /cockpitBtn\.setAttribute\('aria-pressed', String\(this\.active\)\);/);
+  assert.match(syncModeSwitch[1], /cockpitBtn\.disabled = this\.active \|\| !available;/);
+  assert.match(syncModeSwitch[1], /'Select an aircraft first'/);
+
   // Visual language: matches the existing #view-switcher cockpit chrome (mono
-  // font, pill shape, cockpit accent, same dark glass palette), and sits above
-  // both the hidden-in-cockpit app header and the HUD topline/vision control.
+  // font, pill shape, cockpit accent, same dark glass palette), sits above the
+  // HUD topline/vision control in Cockpit, and below the app header in Map mode.
   assert.match(css, /\.cockpit-mode-switch\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?z-index:\s*148;/);
   assert.match(css, /\.cockpit-mode-switch\s*\{[\s\S]*?border-radius:\s*999px;[\s\S]*?background:\s*rgba\(0, 7, 12, 0\.82\);/);
   assert.match(css, /\.cockpit-mode-switch-btn\s*\{[\s\S]*?font:\s*700 10px\/1 var\(--font-mono\);/);
   assert.match(
     css,
     /\.cockpit-mode-switch-btn\[aria-pressed="true"\]\s*\{\s*background:\s*var\(--cockpit-accent, #00dcff\);/,
-    'the active (COCKPIT) segment is highlighted with the cockpit accent colour',
+    'the active segment is highlighted with the cockpit accent colour',
   );
   assert.match(css, /\.cockpit-mode-switch-btn:focus-visible\s*\{\s*outline:\s*none;\s*box-shadow:\s*0 0 0 2px var\(--cockpit-accent/, 'keyboard focus must be visible');
   const cockpitHudZ = css.match(/#cockpit-hud\s*\{[\s\S]*?z-index:\s*(\d+);/);
   const modeSwitchZ = css.match(/\.cockpit-mode-switch\s*\{[\s\S]*?z-index:\s*(\d+);/);
   assert.ok(cockpitHudZ && modeSwitchZ);
   assert.ok(Number(modeSwitchZ[1]) > Number(cockpitHudZ[1]), 'the switch must render above the HUD, never behind it');
-  assert.match(css, /\.cockpit-mode-switch\s*\{[\s\S]*?top:\s*calc\(8px \+ env\(safe-area-inset-top\)\);/, 'mobile-safe top inset');
+  assert.match(css, /\.cockpit-mode-switch\s*\{[\s\S]*?top:\s*calc\(8px \+ env\(safe-area-inset-top\)\);/, 'Cockpit-mode, safe-area-aware top inset');
+  assert.match(
+    css,
+    /body:not\(\.cockpit-mode\) \.cockpit-mode-switch \{\s*\/\*[\s\S]*?\*\/\s*top:\s*calc\(56px \+ 8px \+ env\(safe-area-inset-top\)\);/,
+    'in Map mode the switch must sit below the (visible) app header, not overlap it',
+  );
+  assert.match(
+    css,
+    /@media \(max-width: 767px\) \{\s*body:not\(\.cockpit-mode\) \.cockpit-mode-switch \{ top: calc\(48px \+ 8px \+ env\(safe-area-inset-top\)\); \}/,
+    'the Map-mode offset must track the mobile 48px header height too',
+  );
+});
+
+test('the CCTV layer\'s own ON/OFF state owns #cctv-panel visibility, through the existing subscribe/render path', () => {
+  // 1. Markup default: no clutter before the layer is ever turned on.
+  assert.match(html, /<div id="cctv-panel" class="panel-collapsible collapsed" data-panel-id="cctv-panel" hidden>/);
+
+  // 2. Exactly one subscription to the CCTV layer - no new independent listener
+  //    was added alongside the existing subscribe/getUIState render path.
+  assert.equal(
+    (ui.match(/cctvLayer\.subscribe\(/g) || []).length,
+    1,
+    'CCTV panel visibility must ride the one existing subscription, not a second listener',
+  );
+  assert.match(
+    ui,
+    /this\._cctvUnsubscribe = cctvLayer\.subscribe\(\(state\) => \{\s*\n\s*this\._renderCctvState\(state\);/,
+  );
+
+  const render = ui.match(/\n {2}_renderCctvState\(state\) \{([\s\S]*?)\n {2}\}\n\n {2}\/\*\*\n {3}\* Typewriter-animates CCTV summary/);
+  assert.ok(render, '_renderCctvState is missing');
+  const body = render[1];
+
+  // 3. One enabled-transition block, reused for both directions - not a
+  //    separate on-handler and off-handler, and gated the same way the
+  //    existing active-camera auto-expand block already is (a last-seen cache,
+  //    so this only fires on an actual ON<->OFF transition).
+  assert.equal(
+    (body.match(/this\._lastSeenCctvEnabled/g) || []).length,
+    2,
+    'one read-and-compare plus one write - a single transition block, not a duplicated on/off pair',
+  );
+  const transition = body.match(/if \(this\._lastSeenCctvEnabled !== enabled\) \{([\s\S]*?)\n {4}\}\n\n {4}const effectiveActiveId/);
+  assert.ok(transition, 'the CCTV enabled-transition block is missing');
+
+  // 4. ON: unhidden before being expanded, so the panel has real dimensions
+  //    when setPanelCollapsed's layout pass measures it; reuses setPanelCollapsed
+  //    exactly like the existing active-camera auto-expand below it.
+  assert.match(
+    transition[1],
+    /this\._cctvPanel\.hidden = false;\s*\n\s*this\.setPanelCollapsed\('cctv-panel', false, \{ explicit: true \}\);/,
+    'CCTV ON must unhide the panel and auto-expand it via the existing setPanelCollapsed',
+  );
+
+  // 5. OFF: collapsed BEFORE being hidden, so it can never be caught mid-transition
+  //    reading as an expanded right-rail panel.
+  assert.match(
+    transition[1],
+    /this\.setPanelCollapsed\('cctv-panel', true, \{ explicit: true \}\);\s*\n\s*this\._cctvPanel\.hidden = true;/,
+    'CCTV OFF must collapse the panel before hiding it',
+  );
+
+  // 6. The pre-existing active-camera auto-expand logic (and its own Tactical-
+  //    aware last-seen gate) is completely untouched by this change.
+  assert.match(
+    body,
+    /const effectiveActiveId = enabled \? \(activeId \|\| null\) : null;[\s\S]*?this\.setPanelCollapsed\('cctv-panel', false, \{ explicit: Boolean\(state\?\.explicitSelection\) \}\);/,
+    'the existing active-camera auto-expand path must be preserved untouched',
+  );
+
+  // 7. A hidden panel can never be miscounted as "expanded" by the Tactical
+  //    right-rail exclusivity pass - excluded at the very first panel scan, so
+  //    it also never receives a phantom collapsed-strip height allocation.
+  assert.match(
+    ui,
+    /const panels = \[\.\.\.stack\.children\]\.filter\(\(panel\) => panel\.matches\('\[data-panel-id\]'\) && !panel\.hidden\);/,
+    'the right-rail panel scan must exclude hidden panels entirely',
+  );
+  // The Tactical exclusivity policy function itself is untouched.
+  assert.match(ui, /shouldHideCollapsedRightPanels\(\{\s*hudVariant: this\.hud\.getVariant\(\),\s*hasExpandedPanel,\s*\}\)/);
+
+  // Nothing in src/data/cctv.js itself (camera/calibration/projection/Street
+  // View fallback/provider logic) was touched for this.
+  const cctvModule = fs.readFileSync(path.join(ROOT, 'src', 'data', 'cctv.js'), 'utf8');
+  assert.doesNotMatch(cctvModule, /_lastSeenCctvEnabled|syncModeSwitch/);
 });
 
 test('cockpit state cannot report entryAllowed while already active', () => {

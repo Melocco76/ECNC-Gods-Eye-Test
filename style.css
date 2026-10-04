@@ -3092,15 +3092,21 @@ body.cockpit-mode #view-switcher button {
   background: rgba(0, 7, 12, 0.74);
   white-space: nowrap;
 }
-/* Persistent top mode switch (Cockpit only) - a more discoverable companion to
-   #view-switcher's EXIT COCKPIT, not a replacement for it. Sits flush at the
-   very top, above the app header (hidden in Cockpit mode, see body.cockpit-mode
-   #app-header) and above .cockpit-topline's own clamp(18px, 3vh, 34px) start,
-   so it never competes with the flight instruments or the vision PREV/CURRENT/
-   NEXT control for the same space. */
+/* Persistent top MAP|COCKPIT switch - visible in BOTH modes, a more discoverable
+   companion to #view-switcher's EXIT COCKPIT and Contacts' own COCKPIT entry
+   button, not a replacement for either. Sits flush at the very top, above the
+   app header (hidden in Cockpit mode, see body.cockpit-mode #app-header) and
+   above .cockpit-topline's own clamp(18px, 3vh, 34px) start, so it never
+   competes with the flight instruments or the vision PREV/CURRENT/NEXT control
+   for the same space in Cockpit; in Map mode it sits above the header's own
+   content with nothing else occupying that exact top-center strip. */
 .cockpit-mode-switch {
   position: fixed;
   z-index: 148;
+  /* Cockpit mode hides #app-header entirely (body.cockpit-mode #app-header),
+     so this default offset is the Cockpit placement, flush under the HUD's
+     own top margin. Map mode keeps the header, so it is pushed below it
+     instead (see body:not(.cockpit-mode) overrides, desktop and mobile). */
   top: calc(8px + env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
@@ -3113,7 +3119,15 @@ body.cockpit-mode #view-switcher button {
   box-shadow: 0 0 18px rgba(0, 0, 0, 0.24);
   pointer-events: auto;
 }
+body:not(.cockpit-mode) .cockpit-mode-switch {
+  /* Below the 56px desktop #app-header (which Map mode keeps visible), plus
+     the same 8px clearance used in Cockpit. */
+  top: calc(56px + 8px + env(safe-area-inset-top));
+}
 .cockpit-mode-switch[hidden] { display: none; }
+.cockpit-mode-switch-btn:disabled:not([aria-pressed="true"]) {
+  color: rgba(188, 238, 255, 0.4);
+}
 .cockpit-mode-switch-btn {
   display: inline-flex;
   align-items: center;
@@ -10150,6 +10164,8 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
 .drawer-places h4 { margin: 10px 0 6px; font: 600 13px/1.2 var(--font-sans); color: var(--text-secondary); }
 
 @media (max-width: 767px) {
+  body:not(.cockpit-mode) .cockpit-mode-switch { top: calc(48px + 8px + env(safe-area-inset-top)); }
+
   /* -- Header: 48px, brand left, Search / Layers / About right ---------------- */
   #app-header { --app-header-height: 48px; height: 48px; padding: 0 4px 0 8px; gap: 4px; }
   #app-header #title-bar { flex: 1 1 auto; min-width: 0; }
