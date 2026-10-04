@@ -1944,7 +1944,8 @@ body.ui-clean-view #scene-runtime.active {
   font-size: 18px;
 }
 
-#top-center-actions #map-weather-toggle[aria-pressed='true'] {
+#top-center-actions #map-weather-toggle[aria-pressed='true'],
+#top-center-actions #street-view-toggle[aria-pressed='true'] {
   border-color: rgba(0, 212, 255, 0.5);
   color: var(--accent);
 }
@@ -2023,6 +2024,102 @@ body.ui-clean-view #scene-runtime.active {
 }
 .map-weather-foot a { color: rgba(184, 244, 255, 0.7); }
 body:is(.cockpit-mode, .ui-clean-view, .recording-mode, .scene-playback-mode) :is(#map-weather-card, #map-weather-toggle) {
+  display: none !important;
+}
+
+/* ── Map-mode Street View card (opt-in, below the globe actions) ── */
+#street-view-card {
+  position: fixed;
+  top: 112px;
+  left: 50%;
+  /* Same stacking rationale as #map-weather-card: above #layer-drawer (125). */
+  z-index: 126;
+  width: min(340px, calc(100vw - 32px));
+  padding: 8px 10px 7px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 212, 255, 0.24);
+  background: rgba(3, 10, 18, 0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: rgba(184, 244, 255, 0.92);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  transform: translateX(-50%);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34), 0 0 14px rgba(0, 212, 255, 0.08);
+}
+#street-view-card[hidden] { display: none; }
+.street-view-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.street-view-title { color: #00e1ff; font-weight: 600; letter-spacing: 0.4px; }
+.street-view-status { margin-left: auto; color: rgba(184, 244, 255, 0.6); }
+#street-view-card[data-status='ready'] .street-view-status { color: #7dffb0; }
+#street-view-card[data-status='loading'] .street-view-status { color: #ffc857; }
+#street-view-card[data-status='unavailable'] .street-view-status { color: #ff8a8a; }
+.street-view-close {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.street-view-main {
+  position: relative;
+  margin-top: 6px;
+  /* 960x540 upstream aspect ratio, full image (and its Google watermark) visible. */
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.street-view-main img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.street-view-error {
+  color: #ff8a8a;
+  font-size: 12px;
+  text-align: center;
+  padding: 0 12px;
+}
+.street-view-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  background: rgba(3, 10, 18, 0.65);
+  color: #e8fbff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.street-view-nav:disabled { opacity: 0.4; cursor: default; }
+.street-view-nav-left { left: 8px; }
+.street-view-nav-right { right: 8px; }
+.street-view-foot {
+  margin-top: 6px;
+  color: rgba(184, 244, 255, 0.5);
+  font-size: 11px;
+  text-transform: none;
+}
+body:is(.cockpit-mode, .ui-clean-view, .recording-mode, .scene-playback-mode) :is(#street-view-card, #street-view-toggle) {
   display: none !important;
 }
 
@@ -10223,7 +10320,7 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
   .drawer-group-count { font-size: 13px; }
 
   /* While the sheet is open the transient panels and dock step aside (state untouched). */
-  body.mobile-sheet-open :is(#cctv-panel, #scene-panel, #global-context-panel, #map-weather-card,
+  body.mobile-sheet-open :is(#cctv-panel, #scene-panel, #global-context-panel, #map-weather-card, #street-view-card,
     #command-dock, #key-setup-chip, #flight-details-panel, #flight-details-btn) { visibility: hidden; pointer-events: none; }
 
   /* -- Utility panels: one at a time, as a card above the credit line ------------ */
@@ -10251,6 +10348,17 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none
   }
   .map-weather-close { width: 44px; height: 44px; font-size: 26px; margin: -10px -10px 0 0; }
   .map-weather-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  /* -- Street View card ------------------------------------------------------------ */
+  #street-view-card {
+    top: 56px; left: 8px; right: 8px; width: auto; transform: none;
+    padding: 10px 12px;
+    font-size: 13px;
+    background: rgba(11, 18, 32, 0.94);
+    border-color: var(--glass-border);
+  }
+  .street-view-close { width: 44px; height: 44px; font-size: 26px; margin: -10px -10px 0 0; }
+  .street-view-nav { width: 44px; height: 44px; }
 
   /* -- Dock: only the voice control remains, bottom-right above the credit line ---- */
   #command-dock {

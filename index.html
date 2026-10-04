@@ -153,6 +153,9 @@
         <button id="map-weather-toggle" type="button" data-drawer-label="Local weather" aria-label="Local weather" aria-pressed="false" aria-controls="map-weather-card" title="Show local weather">
           <span class="material-symbols-outlined" aria-hidden="true">partly_cloudy_day</span>
         </button>
+        <button id="street-view-toggle" type="button" data-drawer-label="Street View" aria-label="Street View" aria-pressed="false" aria-controls="street-view-card" title="Show Street View">
+          <span class="material-symbols-outlined" aria-hidden="true">streetview</span>
+        </button>
       </nav>
           <div class="drawer-tool-list" role="group" aria-label="Panels">
             <button type="button" class="drawer-tool-btn" data-drawer-focus-search><span class="material-symbols-outlined" aria-hidden="true">search</span><span>Search places</span></button>
@@ -258,6 +261,26 @@
     <footer class="map-weather-foot">
       <span>OBS <span id="map-weather-observed">—</span></span>
       <a href="https://open-meteo.com/" target="_blank" rel="noopener">Weather data by Open-Meteo.com</a>
+    </footer>
+  </aside>
+  <aside id="street-view-card" aria-label="Street View at the view centre" data-status="idle" hidden>
+    <header class="street-view-head">
+      <span class="street-view-title">STREET VIEW</span>
+      <span id="street-view-status" class="street-view-status" role="status" aria-live="polite">—</span>
+      <button type="button" class="street-view-close" data-street-view-close aria-label="Back to map" title="Back to map">&times;</button>
+    </header>
+    <div class="street-view-main">
+      <img id="street-view-image" alt="" hidden>
+      <div id="street-view-error" class="street-view-error" role="status" aria-live="polite" hidden>STREET VIEW UNAVAILABLE HERE</div>
+      <button type="button" id="street-view-left" class="street-view-nav street-view-nav-left" aria-label="Turn left 45 degrees" title="Turn left">
+        <span class="material-symbols-outlined" aria-hidden="true">chevron_left</span>
+      </button>
+      <button type="button" id="street-view-right" class="street-view-nav street-view-nav-right" aria-label="Turn right 45 degrees" title="Turn right">
+        <span class="material-symbols-outlined" aria-hidden="true">chevron_right</span>
+      </button>
+    </div>
+    <footer class="street-view-foot">
+      <span>Imagery &copy; Google &mdash; Street View</span>
     </footer>
   </aside>
   <div id="global-loading-status" role="status" aria-live="polite" aria-atomic="true" hidden>

@@ -4802,6 +4802,60 @@ export async function fetchCctvImageFromUpstream(url, {
 }
 
 /**
+ * Fetch a Google Street View static image for a point. Shared by the CCTV
+ * frame fallback chain (upstream -> Street View -> synthetic SVG) and the
+ * user-facing GET /api/streetview route below - one implementation, one
+ * upstream request shape, so neither path can drift from the other.
+ *
+ * Requires GOOGLE_MAPS_SERVER_KEY (or the legacy shared GOOGLE_MAPS_API_KEY),
+ * resolved server-side only via resolveGoogleMapsServerKey() — never sent to
+ * the browser. Returns null (never throws) when no key is configured, the
+ * coordinates are not finite, the request fails, or Google reports no
+ * panorama at this location (return_error_code=true asks Google for a real
+ * HTTP error instead of a generic grey placeholder image in that case).
+ *
+ * @param {object} point
+ * @param {number} point.lat
+ * @param {number} point.lon
+ * @param {number} [point.heading] Compass heading in degrees; default 0.
+ * @param {number} [point.fov] Field of view in degrees; clamped 20-120, default 80.
+ * @param {number} [point.pitch] Up/down angle in degrees; clamped -40..20, default 0.
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl=fetch]
+ * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
+ */
+export async function streetViewFallback({ lat, lon, heading, fov, pitch }, { fetchImpl = fetch } = {}) {
+  const streetViewKey = resolveGoogleMapsServerKey();
+  if (!streetViewKey || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  try {
+    const sv = new URL('https://maps.googleapis.com/maps/api/streetview');
+    sv.searchParams.set('size', '960x540');
+    sv.searchParams.set('location', `${lat},${lon}`);
+    sv.searchParams.set('heading', String(Number.isFinite(heading) ? heading : 0));
+    sv.searchParams.set('fov', String(Number.isFinite(fov) ? Math.max(20, Math.min(120, fov)) : 80));
+    sv.searchParams.set('pitch', String(Number.isFinite(pitch) ? Math.max(-40, Math.min(20, pitch)) : 0));
+    sv.searchParams.set('source', 'outdoor');
+    sv.searchParams.set('return_error_code', 'true');
+    sv.searchParams.set('key', streetViewKey);
+
+    const svResp = await fetchImpl(sv.toString(), {
+      headers: { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' },
+      signal: AbortSignal.timeout(CCTV_FRAME_FETCH_TIMEOUT_MS),
+    });
+    const svType = svResp.headers.get('content-type') || '';
+    if (!svResp.ok || !svType.startsWith('image/')) return null;
+
+    return {
+      ok: true,
+      body: Buffer.from(await svResp.arrayBuffer()),
+      contentType: svType,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Vite plugin: CCTV camera proxy with source registry, frame/media serving,
  * fallback chain (upstream -> Street View -> synthetic SVG), and health tracking.
  *
@@ -4856,38 +4910,6 @@ export function cctvProxy({ fetchImpl = null } = {}) {
       provider: source?.provider || '',
       sourceKind: source?.sourceKind || (source?.url ? 'configured' : 'fallback'),
     };
-  };
-
-  /** Fetch a Google Street View static image as a fallback frame. Requires GOOGLE_MAPS_API_KEY (or GOOGLE_MAPS_SERVER_KEY). */
-  const streetViewFallback = async ({ lat, lon, heading, fov, pitch }) => {
-    const streetViewKey = resolveGoogleMapsServerKey();
-    if (!streetViewKey || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-    try {
-      const sv = new URL('https://maps.googleapis.com/maps/api/streetview');
-      sv.searchParams.set('size', '960x540');
-      sv.searchParams.set('location', `${lat},${lon}`);
-      sv.searchParams.set('heading', String(Number.isFinite(heading) ? heading : 0));
-      sv.searchParams.set('fov', String(Number.isFinite(fov) ? Math.max(20, Math.min(120, fov)) : 80));
-      sv.searchParams.set('pitch', String(Number.isFinite(pitch) ? Math.max(-40, Math.min(20, pitch)) : 0));
-      sv.searchParams.set('source', 'outdoor');
-      sv.searchParams.set('return_error_code', 'true');
-      sv.searchParams.set('key', streetViewKey);
-
-      const svResp = await (fetchImpl || fetch)(sv.toString(), {
-        headers: { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' },
-        signal: AbortSignal.timeout(CCTV_FRAME_FETCH_TIMEOUT_MS),
-      });
-      const svType = svResp.headers.get('content-type') || '';
-      if (!svResp.ok || !svType.startsWith('image/')) return null;
-
-      return {
-        ok: true,
-        body: Buffer.from(await svResp.arrayBuffer()),
-        contentType: svType,
-      };
-    } catch {
-      return null;
-    }
   };
 
   const install = (server) => {
@@ -5051,7 +5073,7 @@ export function cctvProxy({ fetchImpl = null } = {}) {
             return;
           }
 
-          const sv = await streetViewFallback({ lat, lon, heading, fov, pitch });
+          const sv = await streetViewFallback({ lat, lon, heading, fov, pitch }, { fetchImpl: fetchImpl || fetch });
           if (sv?.ok) {
             setHealth(cameraId, {
               status: 'degraded',
@@ -8501,6 +8523,85 @@ function weatherEffectsProxy() {
   };
 }
 
+/** Rate limiter for the user-facing Street View route, sized like weather-effects. */
+const _streetViewRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 45, globalMax: 120 });
+
+/**
+ * Vite plugin: user-facing GET /api/streetview?lat=&lon=&heading=&fov=&pitch=
+ * static Street View image, for the Street View card (src/streetViewCard.js).
+ *
+ * Deliberately independent of /api/cctv/* — no shared health bookkeeping, no
+ * shared rate-limit budget, and changes here can never affect CCTV's own
+ * fallback chain. Reuses the exact same streetViewFallback() the CCTV frame
+ * route's fallback chain uses (see cctvProxy above), so both paths request
+ * Google identically and can never drift from each other.
+ *
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl] Injectable for tests; real fetch otherwise.
+ * @returns {import('vite').Plugin}
+ */
+export function streetViewProxy({ fetchImpl = null } = {}) {
+  function install(middlewares) {
+    middlewares.use('/api/streetview', async (req, res) => {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+        return;
+      }
+      if (!_streetViewRateLimiter(clientKey(req))) {
+        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '10' });
+        res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
+        return;
+      }
+      const url = new URL(req.url || '', 'http://localhost');
+      const lat = requiredFiniteQueryNumber(url.searchParams, 'lat');
+      const lon = requiredFiniteQueryNumber(url.searchParams, 'lon');
+      if (lat === null || lon === null || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Valid lat and lon are required' }));
+        return;
+      }
+      // Optional; streetViewFallback() applies the current defaults (heading 0,
+      // fov 80, pitch 0) and clamps (fov 20-120, pitch -40..20) for anything
+      // missing or non-finite — the exact same rule the CCTV fallback uses.
+      const heading = requiredFiniteQueryNumber(url.searchParams, 'heading');
+      const fov = requiredFiniteQueryNumber(url.searchParams, 'fov');
+      const pitch = requiredFiniteQueryNumber(url.searchParams, 'pitch');
+      try {
+        const sv = await streetViewFallback(
+          { lat, lon, heading, fov, pitch },
+          { fetchImpl: fetchImpl || fetch },
+        );
+        if (!sv?.ok) {
+          res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: 'Street View unavailable here' }));
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': sv.contentType,
+          'Cache-Control': 'no-store',
+          'X-Street-View-Source': 'static',
+        });
+        res.end(sv.body);
+      } catch (error) {
+        console.error('[Street View Proxy]', error?.message || String(error));
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Street View proxy error' }));
+      }
+    });
+  }
+
+  return {
+    name: 'street-view-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
 function parseJsonEnv(key, fallback) {
   const value = process.env[key];
   if (!value) return fallback;
@@ -8842,6 +8943,7 @@ export default defineConfig(({ mode }) => {
       regionalBriefProxy(),
       weatherEffectsProxy(),
       cctvProxy(),
+      streetViewProxy(),
       radioBrowserProxy(),
       gbfsProxy(),
       adsbLolProxy(),

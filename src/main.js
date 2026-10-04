@@ -27,6 +27,7 @@ import { initAnnotations } from './annotations/index.js';
 import { initLogoGaze } from './logoGaze.js';
 import { initCockpitCloudEffects } from './cockpitCloudEffects.js';
 import { initMapWeatherCard } from './mapWeatherCard.js';
+import { initStreetViewCard } from './streetViewCard.js';
 import {
   installRenderGovernor,
   getRenderGovernorDiagnostics,
@@ -199,6 +200,7 @@ async function init() {
     const weatherEffects = null;
     const cockpitCloudEffects = initCockpitCloudEffects(viewer);
     const mapWeatherCard = initMapWeatherCard(viewer);
+    const streetViewCard = initStreetViewCard(viewer);
 
     // If no share link state, do default fly-to Winston-Salem
     if (!styleManager.hasShareState) {
@@ -340,6 +342,7 @@ async function init() {
       weatherEffects,
       cockpitCloudEffects,
       mapWeatherCard,
+      streetViewCard,
       getRenderGovernorDiagnostics,
       requestRender: governorRequestRender,
     };
