@@ -108,6 +108,20 @@ test('the drawer and dialog never sit over the Cesium/Google credit corner', () 
   assert.match(css, /#app-header \{[\s\S]*?top: 0; left: 0; right: 0;/, 'the header is a top strip only');
 });
 
+test('the map weather card out-stacks the Layers drawer its own toggle lives inside', () => {
+  // #map-weather-toggle is relocated into the drawer's Weather & hazards group
+  // (see initLayerDrawer), and the drawer is only auto-closed after that click on
+  // mobile widths (isMobile() gate, left untouched here) - on desktop/tablet it
+  // stays open. If the card's z-index ever drops back to or below the drawer's,
+  // the drawer paints over it and the card becomes invisible (no JS error) at
+  // every width except the mobile auto-close band. This pins the ordering, not
+  // literal numbers, so either side may change later without breaking the other.
+  const drawerZ = Number(css.match(/#layer-drawer \{[^}]*\}/)[0].match(/z-index:\s*(\d+);/)[1]);
+  const cardZ = Number(css.match(/#map-weather-card \{[^}]*\}/)[0].match(/z-index:\s*(\d+);/)[1]);
+  assert.ok(Number.isFinite(drawerZ) && Number.isFinite(cardZ), 'both rules declare a numeric z-index');
+  assert.ok(cardZ > drawerZ, `#map-weather-card (${cardZ}) must stack above #layer-drawer (${drawerZ})`);
+});
+
 test('chrome hides in clean view, recording and cockpit; Escape and reduced motion are handled', () => {
   assert.match(css, /body\.ui-clean-view :is\(#app-header, #layer-drawer, #about-dialog\)/);
   assert.match(css, /body\.cockpit-mode :is\(#app-header, #layer-drawer, #about-dialog\)/);

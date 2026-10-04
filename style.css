@@ -1954,7 +1954,11 @@ body.ui-clean-view #scene-runtime.active {
   position: fixed;
   top: 112px;
   left: 50%;
-  z-index: 101;
+  /* Above #layer-drawer (z-index: 125): the toggle lives inside the drawer's
+     Weather & hazards group, and the drawer is only auto-closed after the
+     click on mobile widths - on desktop/tablet it stays open, so the card
+     must out-stack it or it renders invisible underneath (see mapWeatherCard.test.mjs). */
+  z-index: 126;
   width: min(268px, calc(100vw - 32px));
   padding: 8px 10px 7px;
   border-radius: 7px;
