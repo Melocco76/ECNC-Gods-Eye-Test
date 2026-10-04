@@ -4820,11 +4820,16 @@ export async function fetchCctvImageFromUpstream(url, {
  * @param {number} [point.heading] Compass heading in degrees; default 0.
  * @param {number} [point.fov] Field of view in degrees; clamped 20-120, default 80.
  * @param {number} [point.pitch] Up/down angle in degrees; clamped -40..20, default 0.
+ * @param {number} [point.radius] Search radius in meters for the nearest panorama.
+ *   Optional and omitted from the request unless finite — CCTV's call site never
+ *   passes this, so CCTV keeps Google's own default search radius unchanged.
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl=fetch]
  * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
  */
-export async function streetViewFallback({ lat, lon, heading, fov, pitch }, { fetchImpl = fetch } = {}) {
+export async function streetViewFallback({
+  lat, lon, heading, fov, pitch, radius,
+}, { fetchImpl = fetch } = {}) {
   const streetViewKey = resolveGoogleMapsServerKey();
   if (!streetViewKey || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   try {
@@ -4834,6 +4839,7 @@ export async function streetViewFallback({ lat, lon, heading, fov, pitch }, { fe
     sv.searchParams.set('heading', String(Number.isFinite(heading) ? heading : 0));
     sv.searchParams.set('fov', String(Number.isFinite(fov) ? Math.max(20, Math.min(120, fov)) : 80));
     sv.searchParams.set('pitch', String(Number.isFinite(pitch) ? Math.max(-40, Math.min(20, pitch)) : 0));
+    if (Number.isFinite(radius)) sv.searchParams.set('radius', String(radius));
     sv.searchParams.set('source', 'outdoor');
     sv.searchParams.set('return_error_code', 'true');
     sv.searchParams.set('key', streetViewKey);
@@ -8527,6 +8533,15 @@ function weatherEffectsProxy() {
 const _streetViewRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 45, globalMax: 120 });
 
 /**
+ * Search radius (meters) for the user-facing route only. A camera-center point
+ * from the 3D map frequently lands over a house/yard/field rather than on the
+ * road itself; Google's own default radius (50 m, applied when the param is
+ * omitted) is often too tight to reach the nearest roadside panorama from
+ * there. CCTV's call site never passes this and keeps Google's 50 m default.
+ */
+const STREET_VIEW_USER_SEARCH_RADIUS_M = 150;
+
+/**
  * Vite plugin: user-facing GET /api/streetview?lat=&lon=&heading=&fov=&pitch=
  * static Street View image, for the Street View card (src/streetViewCard.js).
  *
@@ -8534,7 +8549,8 @@ const _streetViewRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 45, glob
  * shared rate-limit budget, and changes here can never affect CCTV's own
  * fallback chain. Reuses the exact same streetViewFallback() the CCTV frame
  * route's fallback chain uses (see cctvProxy above), so both paths request
- * Google identically and can never drift from each other.
+ * Google identically (aside from this route's fixed search radius) and can
+ * never drift from each other otherwise.
  *
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl] Injectable for tests; real fetch otherwise.
@@ -8569,7 +8585,7 @@ export function streetViewProxy({ fetchImpl = null } = {}) {
       const pitch = requiredFiniteQueryNumber(url.searchParams, 'pitch');
       try {
         const sv = await streetViewFallback(
-          { lat, lon, heading, fov, pitch },
+          { lat, lon, heading, fov, pitch, radius: STREET_VIEW_USER_SEARCH_RADIUS_M },
           { fetchImpl: fetchImpl || fetch },
         );
         if (!sv?.ok) {

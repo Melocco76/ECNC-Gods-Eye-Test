@@ -57,6 +57,27 @@ test('streetViewFallback builds the correct Google Street View Static request', 
   assert.equal(observedUrl.searchParams.get('source'), 'outdoor');
   assert.equal(observedUrl.searchParams.get('return_error_code'), 'true');
   assert.equal(observedUrl.searchParams.get('key'), SV_KEY);
+  assert.equal(observedUrl.searchParams.has('radius'), false, 'no radius means CCTV keeps Google\'s own default search radius');
+});
+
+test('streetViewFallback omits radius when not given and includes it when given', async () => {
+  process.env.GOOGLE_MAPS_SERVER_KEY = SV_KEY;
+  const capture = async (overrides) => {
+    let observedUrl = null;
+    await streetViewFallback(
+      { lat: 1, lon: 2, ...overrides },
+      {
+        fetchImpl: async (url) => {
+          observedUrl = new URL(String(url));
+          return new Response(SV_JPEG, { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+        },
+      },
+    );
+    return observedUrl;
+  };
+
+  assert.equal((await capture({})).searchParams.has('radius'), false, 'radius omitted by default');
+  assert.equal((await capture({ radius: 150 })).searchParams.get('radius'), '150');
 });
 
 test('streetViewFallback defaults heading/fov/pitch and clamps fov and pitch', async () => {
@@ -94,6 +115,8 @@ test('GET /api/streetview returns the image with the static-source header on suc
   assert.equal(res.headers['x-street-view-source'], 'static');
   assert.equal(res.body.equals(SV_JPEG), true);
   assert.ok(sv.calls[0].includes('heading=90'));
+  const upstreamUrl = new URL(sv.calls[0]);
+  assert.equal(upstreamUrl.searchParams.get('radius'), '150', 'user-facing route searches a 150m radius for the nearest panorama');
 });
 
 test('non-GET requests are rejected with 405', async () => {
@@ -191,4 +214,9 @@ test('CCTV Street View fallback and /api/streetview share the same hoisted imple
   for (const param of ['size', 'source', 'return_error_code']) {
     assert.equal(cctvRequestUrl.searchParams.get(param), directRequestUrl.searchParams.get(param), `same ${param} value from the shared helper`);
   }
+  // The two call sites deliberately differ on radius: CCTV never passes one
+  // (Google's own default search radius), while the user-facing route always
+  // passes the fixed 150m constant. Both still go through the same helper.
+  assert.equal(cctvRequestUrl.searchParams.has('radius'), false, 'CCTV keeps no radius param');
+  assert.equal(directRequestUrl.searchParams.get('radius'), '150', 'user-facing route always searches 150m');
 });
