@@ -3092,6 +3092,51 @@ body.cockpit-mode #view-switcher button {
   background: rgba(0, 7, 12, 0.74);
   white-space: nowrap;
 }
+/* Persistent top mode switch (Cockpit only) - a more discoverable companion to
+   #view-switcher's EXIT COCKPIT, not a replacement for it. Sits flush at the
+   very top, above the app header (hidden in Cockpit mode, see body.cockpit-mode
+   #app-header) and above .cockpit-topline's own clamp(18px, 3vh, 34px) start,
+   so it never competes with the flight instruments or the vision PREV/CURRENT/
+   NEXT control for the same space. */
+.cockpit-mode-switch {
+  position: fixed;
+  z-index: 148;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgba(116, 219, 255, 0.38);
+  border-radius: 999px;
+  background: rgba(0, 7, 12, 0.82);
+  box-shadow: 0 0 18px rgba(0, 0, 0, 0.24);
+  pointer-events: auto;
+}
+.cockpit-mode-switch[hidden] { display: none; }
+.cockpit-mode-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 5px 13px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #bceeff;
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.cockpit-mode-switch-btn .material-symbols-outlined { font-size: 14px; }
+.cockpit-mode-switch-btn:hover:not(:disabled) { color: #fff; }
+.cockpit-mode-switch-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--cockpit-accent, #00dcff); }
+.cockpit-mode-switch-btn[aria-pressed="true"] {
+  background: var(--cockpit-accent, #00dcff);
+  color: #00141c;
+}
+.cockpit-mode-switch-btn:disabled { cursor: default; }
+
 .cockpit-context-window {
   position: absolute;
   z-index: 4;
@@ -3999,6 +4044,7 @@ body.cockpit-mode #intel-hud .hud-left-edge { left: 22px; }
 body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 
 @media (max-width: 760px) {
+  .cockpit-mode-switch-btn { padding: 6px 11px; font-size: 10px; }
   #view-switcher { right: 16px; bottom: 16px; }
   body.cockpit-mode #view-switcher {
     right: auto;

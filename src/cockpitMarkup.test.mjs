@@ -839,6 +839,97 @@ test('voice Cockpit entry refuses when the entry gate is shut', () => {
   assert.match(branch, /Contacts is still starting up/);
 });
 
+test('a persistent top MAP|COCKPIT switch reuses the canonical exit and never duplicates it', () => {
+  // 1. The switch exists, lives outside the bottom EXIT COCKPIT nav (a companion,
+  //    not a replacement), and is hidden by default like every other Cockpit-only
+  //    control (map-view-switch, cockpit-reset-globe) until enter() shows it.
+  const viewSwitcher = html.match(/<nav id="view-switcher"[\s\S]*?<\/nav>/);
+  assert.ok(viewSwitcher, 'View switcher is missing');
+  assert.doesNotMatch(viewSwitcher[0], /id="cockpit-mode-switch/, 'the new switch must not be folded into the existing bottom nav');
+  const modeSwitch = html.match(/<nav id="cockpit-mode-switch"[\s\S]*?<\/nav>/);
+  assert.ok(modeSwitch, 'cockpit-mode-switch markup is missing');
+  assert.match(modeSwitch[0], /id="cockpit-mode-switch"[^>]*aria-label="Map or Cockpit view"[^>]*hidden/, 'hidden outside Cockpit, like the other Cockpit-only controls');
+
+  // 2. COCKPIT reads as the active/current segment and cannot be clicked back
+  //    into itself; MAP is the only live control and is properly a <button>.
+  assert.match(
+    modeSwitch[0],
+    /id="cockpit-mode-switch-map"[^>]*type="button"[^>]*aria-pressed="false"/,
+    'MAP starts unpressed - COCKPIT is the active segment while the switch is visible at all',
+  );
+  assert.match(
+    modeSwitch[0],
+    /id="cockpit-mode-switch-cockpit"[^>]*type="button"[^>]*aria-pressed="true"[\s\S]*?disabled/,
+    'COCKPIT is the highlighted, non-actionable "you are here" segment',
+  );
+  assert.match(modeSwitch[0], /id="cockpit-mode-switch-map"[\s\S]*?MAP/);
+  assert.match(modeSwitch[0], /id="cockpit-mode-switch-cockpit"[\s\S]*?COCKPIT/);
+
+  // 3. Clicking MAP calls the exact same exit() the bottom EXIT COCKPIT button
+  //    and Escape/C already use - not a second, parallel exit path.
+  assert.match(
+    ui,
+    /this\._listen\(this\.mapViewButton, 'click', \(\) => this\.exit\(\)\);\s*\n\s*this\._listen\(this\.modeSwitchMapButton, 'click', \(\) => this\.exit\(\)\);/,
+    'the new MAP control must be wired right beside the existing exit button, to the same exit()',
+  );
+
+  // 4. No duplicate/parallel exit implementation: exit() is declared exactly
+  //    once in CockpitViewController, and the new control's own wiring contains
+  //    none of exit()'s actual teardown steps (it only ever calls exit()).
+  assert.equal(
+    (ui.match(/\n {2}exit\(\{ restoreTracking = true \} = \{\}\) \{/g) || []).length,
+    1,
+    'exit() must have exactly one implementation',
+  );
+  const modeSwitchWiring = ui.slice(
+    ui.indexOf("this.modeSwitch = document.getElementById('cockpit-mode-switch');"),
+    ui.indexOf("this._listen(this.modeSwitchMapButton, 'click', () => this.exit());")
+      + "this._listen(this.modeSwitchMapButton, 'click', () => this.exit());".length,
+  );
+  assert.doesNotMatch(
+    modeSwitchWiring,
+    /cockpit-mode'\)|trackedEntity = null|releaseContinuousRender\('cockpit'\)/,
+    'the switch must never reimplement any piece of exit() teardown itself',
+  );
+
+  // 5. Shown/hidden exactly where mapViewButton and resetGlobeButton already are:
+  //    enter() reveals it, syncEntry() (map mode / entry-availability sync, which
+  //    only ever runs while NOT active) hides it again.
+  const enter = ui.match(/\n  enter\(\) \{([\s\S]*?)\n  \}\n\n  exit\(/);
+  assert.ok(enter, 'enter() is missing');
+  assert.match(
+    enter[1],
+    /if \(this\.mapViewButton\) this\.mapViewButton\.hidden = false;\s*\n\s*if \(this\.resetGlobeButton\) this\.resetGlobeButton\.hidden = false;\s*\n\s*if \(this\.modeSwitch\) this\.modeSwitch\.hidden = false;/,
+    'entering Cockpit must reveal the switch alongside the existing exit controls',
+  );
+  const syncEntry = ui.match(/\n  syncEntry\(\) \{([\s\S]*?)\n  \}\n\n/);
+  assert.ok(syncEntry, 'syncEntry() is missing');
+  assert.match(syncEntry[1], /if \(this\.active\) return;/, 'this hide path only ever runs outside Cockpit mode');
+  assert.match(
+    syncEntry[1],
+    /if \(this\.mapViewButton\) this\.mapViewButton\.hidden = true;\s*\n\s*if \(this\.resetGlobeButton\) this\.resetGlobeButton\.hidden = true;\s*\n\s*if \(this\.modeSwitch\) this\.modeSwitch\.hidden = true;/,
+    'leaving/staying outside Cockpit must hide the switch alongside the existing exit controls',
+  );
+
+  // Visual language: matches the existing #view-switcher cockpit chrome (mono
+  // font, pill shape, cockpit accent, same dark glass palette), and sits above
+  // both the hidden-in-cockpit app header and the HUD topline/vision control.
+  assert.match(css, /\.cockpit-mode-switch\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?z-index:\s*148;/);
+  assert.match(css, /\.cockpit-mode-switch\s*\{[\s\S]*?border-radius:\s*999px;[\s\S]*?background:\s*rgba\(0, 7, 12, 0\.82\);/);
+  assert.match(css, /\.cockpit-mode-switch-btn\s*\{[\s\S]*?font:\s*700 10px\/1 var\(--font-mono\);/);
+  assert.match(
+    css,
+    /\.cockpit-mode-switch-btn\[aria-pressed="true"\]\s*\{\s*background:\s*var\(--cockpit-accent, #00dcff\);/,
+    'the active (COCKPIT) segment is highlighted with the cockpit accent colour',
+  );
+  assert.match(css, /\.cockpit-mode-switch-btn:focus-visible\s*\{\s*outline:\s*none;\s*box-shadow:\s*0 0 0 2px var\(--cockpit-accent/, 'keyboard focus must be visible');
+  const cockpitHudZ = css.match(/#cockpit-hud\s*\{[\s\S]*?z-index:\s*(\d+);/);
+  const modeSwitchZ = css.match(/\.cockpit-mode-switch\s*\{[\s\S]*?z-index:\s*(\d+);/);
+  assert.ok(cockpitHudZ && modeSwitchZ);
+  assert.ok(Number(modeSwitchZ[1]) > Number(cockpitHudZ[1]), 'the switch must render above the HUD, never behind it');
+  assert.match(css, /\.cockpit-mode-switch\s*\{[\s\S]*?top:\s*calc\(8px \+ env\(safe-area-inset-top\)\);/, 'mobile-safe top inset');
+});
+
 test('cockpit state cannot report entryAllowed while already active', () => {
   // Cockpit takes the entity off viewer.trackedEntity on entry and NEXT puts
   // one back, so this flipped true/false between calls while active stayed

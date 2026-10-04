@@ -555,6 +555,21 @@
     <div class="cockpit-help">ESC EXIT <span>·</span> C TOGGLE</div>
   </section>
 
+  <!-- Persistent top mode switch (Cockpit only): a clearer, more discoverable
+       counterpart to EXIT COCKPIT below, not a replacement for it. MAP calls
+       the exact same canonical exit() the bottom button and Escape/C use;
+       COCKPIT is a disabled "you are here" indicator, never an entry point. -->
+  <nav id="cockpit-mode-switch" class="cockpit-mode-switch" aria-label="Map or Cockpit view" hidden>
+    <button id="cockpit-mode-switch-map" type="button" class="cockpit-mode-switch-btn" aria-pressed="false" aria-label="Switch to Map view" title="Switch to Map view">
+      <span class="material-symbols-outlined" aria-hidden="true">map</span>
+      <span>MAP</span>
+    </button>
+    <button id="cockpit-mode-switch-cockpit" type="button" class="cockpit-mode-switch-btn" aria-pressed="true" aria-label="Cockpit view (current)" title="Cockpit view (current)" disabled>
+      <span class="material-symbols-outlined" aria-hidden="true">flight</span>
+      <span>COCKPIT</span>
+    </button>
+  </nav>
+
   <nav id="view-switcher" aria-label="View switcher">
     <button id="cockpit-reset-globe" type="button" aria-label="Reset cockpit to full globe view" title="Exit cockpit and return to full globe view" hidden>
       <span class="material-symbols-outlined" aria-hidden="true">public</span>

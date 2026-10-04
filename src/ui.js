@@ -685,6 +685,11 @@ class CockpitViewController {
     this._tr3bSignature = null;
     this.mapViewButton = document.getElementById('map-view-switch');
     this.resetGlobeButton = document.getElementById('cockpit-reset-globe');
+    // Persistent top MAP|COCKPIT switch - a more discoverable companion to
+    // mapViewButton (EXIT COCKPIT), never a replacement. MAP calls this exact
+    // same exit() below; COCKPIT is a disabled "you are here" indicator.
+    this.modeSwitch = document.getElementById('cockpit-mode-switch');
+    this.modeSwitchMapButton = document.getElementById('cockpit-mode-switch-map');
     this.hud = document.getElementById('cockpit-hud');
     this.entryFocusOrigin = null;
     this.callsign = document.getElementById('cockpit-callsign');
@@ -806,6 +811,7 @@ class CockpitViewController {
     this._listen(this.entry, 'click', () => this.enter());
     this._listen(this.tr3bToggle, 'click', () => this.toggleTrackedTr3b());
     this._listen(this.mapViewButton, 'click', () => this.exit());
+    this._listen(this.modeSwitchMapButton, 'click', () => this.exit());
     this._listen(this.visionPrevious, 'click', () => this.cycleVisionMode(-1));
     this._listen(this.visionCurrent, 'click', () => this.cycleVisionMode(1));
     this._listen(this.visionNext, 'click', () => this.cycleVisionMode(1));
@@ -943,6 +949,7 @@ class CockpitViewController {
     if (this.entry) this.entry.hidden = !available;
     if (this.mapViewButton) this.mapViewButton.hidden = true;
     if (this.resetGlobeButton) this.resetGlobeButton.hidden = true;
+    if (this.modeSwitch) this.modeSwitch.hidden = true;
   }
 
   /**
@@ -1088,6 +1095,7 @@ class CockpitViewController {
     }
     if (this.mapViewButton) this.mapViewButton.hidden = false;
     if (this.resetGlobeButton) this.resetGlobeButton.hidden = false;
+    if (this.modeSwitch) this.modeSwitch.hidden = false;
     if (this.hud) this.hud.hidden = false;
     if (this.signalStream) this.signalStream.hidden = false;
     this.hud?.classList.add('signals-active');
