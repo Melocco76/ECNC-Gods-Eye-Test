@@ -815,7 +815,7 @@ class CockpitViewController {
     this._listen(this.tr3bToggle, 'click', () => this.toggleTrackedTr3b());
     this._listen(this.mapViewButton, 'click', () => this.exit());
     this._listen(this.modeSwitchMapButton, 'click', () => this.exit());
-    this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter());
+    this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter({ requireFullContext: false }));
     this._listen(this.visionPrevious, 'click', () => this.cycleVisionMode(-1));
     this._listen(this.visionCurrent, 'click', () => this.cycleVisionMode(1));
     this._listen(this.visionNext, 'click', () => this.cycleVisionMode(1));
@@ -945,15 +945,25 @@ class CockpitViewController {
     const trackedContact = !!(info && this.viewer.trackedEntity?.position);
     this.syncTr3bToggle(trackedContact ? info : null);
     const available = !!(this.isEntryAllowed() && trackedContact);
+    // The persistent top switch is reachable from the ordinary click-a-plane
+    // flow, which never touches Contacts - it must not inherit #cockpit-entry's
+    // stricter Contacts-bundle requirement (cockpitEntryAllowed in
+    // contextModePolicy.js, untouched here, still fully gates #cockpit-entry
+    // via `available` above, and enter()'s own default strict check below).
+    const switchAvailable = trackedContact;
     // Change-only DOM writes: this runs on a preUpdate cadence, and
     // unconditional `hidden` assignments invalidate style/layout every frame
-    // even when nothing changed. (perf item 9)
-    if (this._entryAvailable === available) return;
+    // even when nothing changed. (perf item 9) Both values are cached
+    // independently: a tracked aircraft can appear/disappear while Contacts'
+    // own availability stays unchanged (and vice versa), and each must still
+    // reach its own control.
+    if (this._entryAvailable === available && this._switchAvailable === switchAvailable) return;
     this._entryAvailable = available;
+    this._switchAvailable = switchAvailable;
     if (this.entry) this.entry.hidden = !available;
     if (this.mapViewButton) this.mapViewButton.hidden = true;
     if (this.resetGlobeButton) this.resetGlobeButton.hidden = true;
-    this.syncModeSwitch(available);
+    this.syncModeSwitch(switchAvailable);
   }
 
   /**
@@ -1088,9 +1098,19 @@ class CockpitViewController {
     }
   }
 
-  enter() {
+  /**
+   * @param {object} [options]
+   * @param {boolean} [options.requireFullContext=true] Whether entry requires the
+   *   full Contacts bundle (cockpitEntryAllowed: Contacts mode = flights, both
+   *   flight feeds enabled) in addition to a valid tracked aircraft. Every
+   *   caller except the persistent top COCKPIT button keeps the default: that
+   *   button alone passes `false`, since it is reachable from a plain aircraft
+   *   click that never touches Contacts. cockpitEntryAllowed() itself, and what
+   *   #cockpit-entry/voice entry require, are unchanged.
+   */
+  enter({ requireFullContext = true } = {}) {
     if (this.active) return false;
-    if (!this.isEntryAllowed()) return false;
+    if (requireFullContext && !this.isEntryAllowed()) return false;
     const info = this.readAircraftInfo();
     const entity = this.viewer.trackedEntity;
     if (!info || !entity?.position) return false;
@@ -1125,10 +1145,11 @@ class CockpitViewController {
     this.viewer.scene.screenSpaceCameraController.enableInputs = false;
     document.body.classList.add('cockpit-mode');
     // Activation writes entry/quick/map visibility directly, bypassing
-    // syncEntry's change-only cache — invalidate it so the exit-path
+    // syncEntry's change-only caches — invalidate both of them so the exit-path
     // syncEntry re-applies every write (notably re-hiding mapViewButton and
     // re-deriving the persistent MAP|COCKPIT switch's state via syncModeSwitch).
     this._entryAvailable = undefined;
+    this._switchAvailable = undefined;
     if (this.entry) this.entry.hidden = true;
     if (this.tr3bToggle) {
       this.tr3bToggle.hidden = true;

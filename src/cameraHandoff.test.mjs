@@ -31,7 +31,7 @@ function ordered(source, needles, label) {
 test('Cockpit takeover invalidates deferred work before camera cancellation', () => {
   const enter = body(
     ui,
-    /enter\(\) \{([\s\S]*?)\n  \}\n\n  exit\(/,
+    /enter\(\{ requireFullContext = true \} = \{\}\) \{([\s\S]*?)\n  \}\n\n  exit\(/,
     'Cockpit enter',
   );
   ordered(enter, [

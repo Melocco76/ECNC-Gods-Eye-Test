@@ -92,13 +92,13 @@ test('Contacts uses the approved radar icon', () => {
 });
 
 test('Cockpit Escape handling precedes form-control shortcut suppression and focus is restored', () => {
-  const keydown = ui.match(/onKeyDown\(event\) \{([\s\S]*?)\n  \}\n\n  enter\(\)/);
+  const keydown = ui.match(/onKeyDown\(event\) \{([\s\S]*?)\n  \}\n\n(?:  \/\*\*[\s\S]*?\*\/\n)?  enter\(\{ requireFullContext = true \} = \{\}\)/);
   assert.ok(keydown, 'Cockpit keyboard handler is missing');
   const escapeIndex = keydown[1].indexOf("event.key === 'Escape'");
   const formGuardIndex = keydown[1].indexOf("closest?.('input, textarea, select, [contenteditable]')");
   assert.ok(escapeIndex >= 0 && formGuardIndex > escapeIndex, 'Escape must work while focus is inside a form control');
 
-  const enter = ui.match(/\n  enter\(\) \{([\s\S]*?)\n  \}\n\n  exit\(/);
+  const enter = ui.match(/\n  enter\(\{ requireFullContext = true \} = \{\}\) \{([\s\S]*?)\n  \}\n\n  exit\(/);
   const exit = ui.match(/\n  exit\(\{ restoreTracking = true \} = \{\}\) \{([\s\S]*?)\n  \}\n\n  update\(\)/);
   assert.ok(enter && exit, 'Cockpit entry/exit methods are missing');
   assert.match(enter[1], /activeElement/);
@@ -114,7 +114,7 @@ test('Cockpit Escape handling precedes form-control shortcut suppression and foc
 });
 
 test('Cockpit shortcut failures do not leak and open Radio owns the first Escape', () => {
-  const keydown = ui.match(/onKeyDown\(event\) \{([\s\S]*?)\n  \}\n\n  enter\(\)/);
+  const keydown = ui.match(/onKeyDown\(event\) \{([\s\S]*?)\n  \}\n\n(?:  \/\*\*[\s\S]*?\*\/\n)?  enter\(\{ requireFullContext = true \} = \{\}\)/);
   assert.ok(keydown, 'Cockpit keyboard handler is missing');
   assert.match(keydown[1], /document\.getElementById\('context-radio-dock'\)\?\.classList\.contains\('disclosure-open'\)/);
   assert.match(keydown[1], /#cockpit-utility-controls \[aria-expanded="true"\]/);
@@ -872,17 +872,18 @@ test('a persistent top MAP|COCKPIT switch is visible in both modes and reuses th
 
   // 3. Clicking MAP calls the exact same exit() the bottom EXIT COCKPIT button
   //    and Escape/C already use; clicking COCKPIT calls the exact same enter()
-  //    the Contacts panel's own #cockpit-entry button already uses. Neither is
-  //    a second, parallel implementation.
+  //    the Contacts panel's own #cockpit-entry button already uses (with its
+  //    Contacts-bundle requirement relaxed - see the requireFullContext tests
+  //    below). Neither is a second, parallel implementation.
   assert.match(
     ui,
-    /this\._listen\(this\.mapViewButton, 'click', \(\) => this\.exit\(\)\);\s*\n\s*this\._listen\(this\.modeSwitchMapButton, 'click', \(\) => this\.exit\(\)\);\s*\n\s*this\._listen\(this\.modeSwitchCockpitButton, 'click', \(\) => this\.enter\(\)\);/,
+    /this\._listen\(this\.mapViewButton, 'click', \(\) => this\.exit\(\)\);\s*\n\s*this\._listen\(this\.modeSwitchMapButton, 'click', \(\) => this\.exit\(\)\);\s*\n\s*this\._listen\(this\.modeSwitchCockpitButton, 'click', \(\) => this\.enter\(\{ requireFullContext: false \}\)\);/,
     'the new MAP/COCKPIT controls must be wired right beside the existing exit/entry buttons, to the same exit()/enter()',
   );
   assert.match(
     ui,
     /this\._listen\(this\.entry, 'click', \(\) => this\.enter\(\)\);/,
-    'the existing Contacts entry button must still call the same enter()',
+    'the existing Contacts entry button must still call enter() with no arguments - the strict default',
   );
 
   // 4. No duplicate/parallel entry or exit implementation: enter()/exit() are
@@ -895,14 +896,14 @@ test('a persistent top MAP|COCKPIT switch is visible in both modes and reuses th
     'exit() must have exactly one implementation',
   );
   assert.equal(
-    (ui.match(/\n {2}enter\(\) \{/g) || []).length,
+    (ui.match(/\n {2}enter\(\{ requireFullContext = true \} = \{\}\) \{/g) || []).length,
     1,
-    'enter() must have exactly one implementation',
+    'enter() must have exactly one implementation, defaulting requireFullContext to true',
   );
   const modeSwitchWiring = ui.slice(
     ui.indexOf("this.modeSwitch = document.getElementById('cockpit-mode-switch');"),
-    ui.indexOf("this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter());")
-      + "this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter());".length,
+    ui.indexOf("this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter({ requireFullContext: false }));")
+      + "this._listen(this.modeSwitchCockpitButton, 'click', () => this.enter({ requireFullContext: false }));".length,
   );
   assert.doesNotMatch(
     modeSwitchWiring,
@@ -917,12 +918,40 @@ test('a persistent top MAP|COCKPIT switch is visible in both modes and reuses th
     'syncModeSwitch must only ever reflect state, never perform entry/exit or touch tracking itself',
   );
 
-  // 5. The shared helper is reused from exactly the three places the existing
+  // 5. enter() only relaxes its OWN strict gate for the caller that explicitly
+  //    opts out; every other call site (the Contacts entry button, the legacy
+  //    'C' key toggle, and enterCockpitWithTracking's internal call) is left
+  //    calling it with no arguments at all, so they keep the full strict check.
+  assert.match(
+    ui,
+    /enter\(\{ requireFullContext = true \} = \{\}\) \{\s*\n\s*if \(this\.active\) return false;\s*\n\s*if \(requireFullContext && !this\.isEntryAllowed\(\)\) return false;/,
+    'enter() must gate on isEntryAllowed() only when requireFullContext is true',
+  );
+  assert.match(
+    ui,
+    /const changed = this\.active \? this\.exit\(\) : this\.enter\(\);/,
+    'the legacy C-key toggle must still call enter() with no arguments (the strict default)',
+  );
+  const cockpitTracking = fs.readFileSync(path.join(ROOT, 'src', 'cockpitTracking.js'), 'utf8');
+  assert.match(
+    cockpitTracking,
+    /entered = Boolean\(cockpitView\.enter\(\)\);/,
+    'enterCockpitWithTracking must still call enter() with no arguments (the strict default)',
+  );
+  assert.equal(
+    (ui.match(/\.enter\(\{ requireFullContext: false \}\)/g) || []).length,
+    1,
+    'exactly one caller - the persistent top COCKPIT button - may opt out of the strict gate',
+  );
+
+  // 6. The shared helper is reused from exactly the three places the existing
   //    exit controls are already shown/hidden from: enter(), exit() (via its
-  //    existing syncEntry() call, after enter() invalidates the cache so that
-  //    call is never skipped), and syncEntry()'s own change-only availability
-  //    branch, reusing its existing `available` calculation and active-mode guard.
-  const enter = ui.match(/\n  enter\(\) \{([\s\S]*?)\n  \}\n\n  exit\(/);
+  //    existing syncEntry() call, after enter() invalidates BOTH change-only
+  //    caches so that call is never skipped), and syncEntry()'s own change-only
+  //    branch - which now derives two independent eligibility values from the
+  //    SAME underlying `trackedContact`, so neither control can mask a change
+  //    in the other's availability.
+  const enter = ui.match(/\n  enter\(\{ requireFullContext = true \} = \{\}\) \{([\s\S]*?)\n  \}\n\n  exit\(/);
   assert.ok(enter, 'enter() is missing');
   assert.match(
     enter[1],
@@ -931,8 +960,8 @@ test('a persistent top MAP|COCKPIT switch is visible in both modes and reuses th
   );
   assert.match(
     enter[1],
-    /this\._entryAvailable = undefined;/,
-    'entry must invalidate the cache so the post-exit syncEntry() call below is never skipped',
+    /this\._entryAvailable = undefined;\s*\n\s*this\._switchAvailable = undefined;/,
+    'entry must invalidate BOTH caches so the post-exit syncEntry() call below is never skipped for either control',
   );
   const exit = ui.match(/\n  exit\(\{ restoreTracking = true \} = \{\}\) \{([\s\S]*?)\n  \}\n\n  update\(\)/);
   assert.ok(exit, 'exit() is missing');
@@ -943,22 +972,51 @@ test('a persistent top MAP|COCKPIT switch is visible in both modes and reuses th
   assert.match(
     syncEntry[1],
     /const available = !!\(this\.isEntryAllowed\(\) && trackedContact\);/,
-    'the switch must reuse this exact existing eligibility calculation, not a second one',
+    '#cockpit-entry must keep its exact original strict eligibility calculation, untouched',
   );
   assert.match(
     syncEntry[1],
-    /if \(this\.mapViewButton\) this\.mapViewButton\.hidden = true;\s*\n\s*if \(this\.resetGlobeButton\) this\.resetGlobeButton\.hidden = true;\s*\n\s*this\.syncModeSwitch\(available\);/,
-    'Map mode must sync the switch (never hide it) alongside the existing exit controls, from the same `available`',
+    /const switchAvailable = trackedContact;/,
+    'the persistent switch must use trackedContact alone, never isEntryAllowed()/the Contacts bundle',
+  );
+  assert.match(
+    syncEntry[1],
+    /if \(this\._entryAvailable === available && this\._switchAvailable === switchAvailable\) return;/,
+    'the change-only cache must track both values independently, so a tracked-aircraft change is never masked by an unchanged Contacts-gated `available`',
+  );
+  assert.match(syncEntry[1], /if \(this\.entry\) this\.entry\.hidden = !available;/, '#cockpit-entry visibility must stay driven by the strict `available`');
+  assert.match(
+    syncEntry[1],
+    /if \(this\.mapViewButton\) this\.mapViewButton\.hidden = true;\s*\n\s*if \(this\.resetGlobeButton\) this\.resetGlobeButton\.hidden = true;\s*\n\s*this\.syncModeSwitch\(switchAvailable\);/,
+    'Map mode must sync the switch (never hide it) from `switchAvailable`, not the stricter `available`',
   );
 
-  // 6. The sync helper itself: active/aria/disabled/title are each derived from
-  //    `this.active` and `available` only - COCKPIT's disabled explanation
-  //    text is exactly what was asked for.
+  // 7. The sync helper itself: active/aria/disabled/title are each derived from
+  //    `this.active` and whatever eligibility value it was called with -
+  //    COCKPIT's disabled explanation text is exactly what was asked for.
   assert.match(syncModeSwitch[1], /mapBtn\.setAttribute\('aria-pressed', String\(!this\.active\)\);/);
   assert.match(syncModeSwitch[1], /mapBtn\.disabled = !this\.active;/);
   assert.match(syncModeSwitch[1], /cockpitBtn\.setAttribute\('aria-pressed', String\(this\.active\)\);/);
   assert.match(syncModeSwitch[1], /cockpitBtn\.disabled = this\.active \|\| !available;/);
   assert.match(syncModeSwitch[1], /'Select an aircraft first'/);
+
+  // 8. cockpitEntryAllowed() and its policy/doc comment - the Contacts-bundle
+  //    guarantee #cockpit-entry still relies on - are completely untouched.
+  const contextModePolicy = fs.readFileSync(path.join(ROOT, 'src', 'contextModePolicy.js'), 'utf8');
+  assert.match(
+    contextModePolicy,
+    /Cockpit entry belongs to the operational Contacts context bundle\. A tracked\s*\n \* aircraft alone is not sufficient: both observed-flight feeds must still be\s*\n \* active so the cockpit's surrounding-contact picture is not presented as a\s*\n \* complete context view when one source is disabled\./,
+  );
+  assert.match(
+    contextModePolicy,
+    /export function cockpitEntryAllowed\(\{\s*\n\s*contextMode,\s*\n\s*contextModeChanging,\s*\n\s*flightsEnabled,\s*\n\s*militaryEnabled,\s*\n\s*\}\) \{\s*\n\s*return contextMode === 'flights'\s*\n\s*&& !contextModeChanging\s*\n\s*&& Boolean\(flightsEnabled\)\s*\n\s*&& Boolean\(militaryEnabled\);\s*\n\s*\}/,
+    'cockpitEntryAllowed must keep requiring the full Contacts bundle, unrelaxed',
+  );
+  assert.match(
+    ui,
+    /isEntryAllowed: \(\) => cockpitEntryAllowed\(\{\s*\n\s*contextMode: this\._contextMode,\s*\n\s*contextModeChanging: this\._contextModeChanging,\s*\n\s*flightsEnabled: !!this\._dataManager\?\.isEnabled\('flights'\),\s*\n\s*militaryEnabled: !!this\._dataManager\?\.isEnabled\('military'\),\s*\n\s*\}\),/,
+    'isEntryAllowed() must still be wired to the unmodified cockpitEntryAllowed()',
+  );
 
   // Visual language: matches the existing #view-switcher cockpit chrome (mono
   // font, pill shape, cockpit accent, same dark glass palette), sits above the
