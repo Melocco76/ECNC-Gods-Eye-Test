@@ -22,6 +22,8 @@ import {
   resolveOverpassPreflight,
   fetchOverpassPayload,
   overpassProxy,
+  readOverpassDisk,
+  writeOverpassDisk,
 } from '../../vite.config.js';
 
 test('preflight checks memory, in-flight, then disk before consuming limiter quota', async () => {
@@ -408,4 +410,174 @@ test('route: a malformed/error HTML body from every mirror is never persisted as
   const errorText = res.body.toString();
   assert.doesNotMatch(errorText, /Not Acceptable/i, 'the upstream HTML error page never reaches the client body');
   assert.doesNotThrow(() => JSON.parse(errorText), 'the client always gets a parseable JSON error shape');
+});
+
+// ── Aggregate cascade timeout (traffic audit, 2026-10-05) ───────────────────
+//
+// A per-mirror 22s AbortController already existed; what was missing was a
+// bound on the WHOLE sequential cascade (up to 4 mirrors), which could
+// previously stretch a single request to 45-90+s if more than one mirror
+// hung rather than failing fast. fetchOverpassPayload()'s 4th parameter
+// (aggregateTimeoutMs) makes that budget injectable for these tests.
+
+function abortError() {
+  return Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+}
+
+/** A mirror response that never settles on its own — only the AbortSignal
+ * fetchOverpassPayload() passes in can end it, exactly like a real hung
+ * upstream connection. Takes the fetch `opts` object (as scriptedFetchWithSignal
+ * invokes it below). */
+function hangsUntilAborted() {
+  return (opts) => new Promise((_resolve, reject) => {
+    const signal = opts?.signal;
+    if (!signal) return;
+    if (signal.aborted) { reject(abortError()); return; }
+    signal.addEventListener('abort', () => reject(abortError()), { once: true });
+  });
+}
+
+/** Like scriptedFetch, but passes the fetch options object (for the
+ * AbortSignal) through to function-valued responses as their one argument. */
+function scriptedFetchWithSignal(responses) {
+  const calls = [];
+  let i = 0;
+  const fetchImpl = async (url, opts) => {
+    calls.push(String(url));
+    const r = responses[Math.min(i, responses.length - 1)];
+    i += 1;
+    return typeof r === 'function' ? r(opts) : r;
+  };
+  return { fetchImpl, calls };
+}
+
+test('fetchOverpassPayload: the aggregate timeout bounds the whole cascade even when a mirror hangs', async () => {
+  const { fetchImpl } = scriptedFetchWithSignal([hangsUntilAborted()]);
+  const t0 = Date.now();
+  await assert.rejects(() => fetchOverpassPayload('data=test', undefined, fetchImpl, 150));
+  const elapsedMs = Date.now() - t0;
+  assert.ok(elapsedMs < 2000, `expected the 150ms aggregate budget to bound the call, took ${elapsedMs}ms`);
+});
+
+test('fetchOverpassPayload: once the aggregate timeout is exhausted, remaining mirrors are not attempted', async () => {
+  const { fetchImpl, calls } = scriptedFetchWithSignal([
+    hangsUntilAborted(),
+    () => { throw new Error('a later mirror must not be attempted once the aggregate budget is spent'); },
+  ]);
+  await assert.rejects(() => fetchOverpassPayload('data=test', undefined, fetchImpl, 120));
+  assert.equal(calls.length, 1, 'only the first (hanging) mirror was attempted before the budget ran out');
+});
+
+// Note: "a timed-out/hung cascade is never cached" is not retested at the
+// route level with a real hang — the route always uses the full 10s default
+// aggregate budget, which would make that test take ~10s of real wall-clock
+// time for no extra assurance. Cache admission only looks at whether
+// fetchOverpassPayload() resolved or threw, not how long it took to get
+// there; "route: primary 406 is never cached" above already exercises that
+// exact same resolve/throw boundary, just via a fast failure instead of a
+// slow one. The aggregate-budget tests above independently prove the thrown
+// path is what a hang produces.
+
+// ── Poisoned disk cache (traffic audit, 2026-10-05) ─────────────────────────
+//
+// A response written to disk before the mirror-failover hardening (or any
+// future bug) could be an error page with status >= 400. readOverpassDisk()
+// must refuse to serve it regardless of age; a fresh upstream attempt must
+// run instead. Good (status < 400) entries must keep working exactly as
+// before. Tested directly against readOverpassDisk()/writeOverpassDisk()
+// with test-owned cache keys — no need to reconstruct the route's own
+// cache-key derivation, since resolveOverpassPreflight() is the exact same
+// function the route calls with whatever key it computes.
+
+test('readOverpassDisk: a poisoned entry (status >= 400) is never served, even very fresh', async () => {
+  const key = `test-poisoned-${Date.now()}-${Math.random()}`;
+  await writeOverpassDisk(key, {
+    status: 406,
+    body: '<html><body>Not Acceptable</body></html>',
+    contentType: 'text/html',
+    endpoint: 'https://overpass-api.de/api/interpreter',
+    rateLimited: false,
+    runtimeError: false,
+    cachedAt: Date.now(),
+  });
+  const result = await readOverpassDisk(key, Infinity);
+  assert.equal(result, null, 'a >=400 disk entry must never be returned, regardless of maxAgeMs');
+});
+
+test('readOverpassDisk: a good entry (status < 400) is still served exactly as before', async () => {
+  const key = `test-good-${Date.now()}-${Math.random()}`;
+  const payload = {
+    status: 200,
+    body: GOOD_BODY,
+    contentType: 'application/json',
+    endpoint: 'https://overpass-api.de/api/interpreter',
+    rateLimited: false,
+    runtimeError: false,
+    cachedAt: Date.now(),
+  };
+  await writeOverpassDisk(key, payload);
+  const result = await readOverpassDisk(key, 60000);
+  assert.ok(result, 'a good entry must still be returned');
+  assert.equal(result.status, 200);
+  assert.equal(result.body, GOOD_BODY);
+});
+
+test('readOverpassDisk: an expired good entry is still rejected by age, unaffected by the status check', async () => {
+  const key = `test-expired-${Date.now()}-${Math.random()}`;
+  await writeOverpassDisk(key, {
+    status: 200,
+    body: GOOD_BODY,
+    contentType: 'application/json',
+    endpoint: 'test',
+    rateLimited: false,
+    runtimeError: false,
+    cachedAt: Date.now() - 100000,
+  });
+  const result = await readOverpassDisk(key, 1000);
+  assert.equal(result, null, 'age rejection must still work for good entries');
+});
+
+test('resolveOverpassPreflight backed by the real readOverpassDisk falls through to UPSTREAM on a poisoned entry', async () => {
+  const key = `test-preflight-poisoned-${Date.now()}-${Math.random()}`;
+  await writeOverpassDisk(key, {
+    status: 406,
+    body: '<html>bad</html>',
+    contentType: 'text/html',
+    endpoint: 'test',
+    rateLimited: false,
+    runtimeError: false,
+    cachedAt: Date.now(),
+  });
+  const result = await resolveOverpassPreflight({
+    cacheKey: key,
+    memoryCache: new Map(),
+    inFlight: new Map(),
+    readDisk: () => readOverpassDisk(key, Infinity),
+    allowUpstream: () => true,
+  });
+  assert.equal(result.source, 'UPSTREAM', 'a poisoned disk entry must never short-circuit to a DISK hit');
+});
+
+test('resolveOverpassPreflight backed by the real readOverpassDisk still serves a good entry as DISK', async () => {
+  const key = `test-preflight-good-${Date.now()}-${Math.random()}`;
+  await writeOverpassDisk(key, {
+    status: 200,
+    body: GOOD_BODY,
+    contentType: 'application/json',
+    endpoint: 'test',
+    rateLimited: false,
+    runtimeError: false,
+    cachedAt: Date.now(),
+  });
+  let upstreamCalled = false;
+  const result = await resolveOverpassPreflight({
+    cacheKey: key,
+    memoryCache: new Map(),
+    inFlight: new Map(),
+    readDisk: () => readOverpassDisk(key, 60000),
+    allowUpstream: () => { upstreamCalled = true; return true; },
+  });
+  assert.equal(result.source, 'DISK');
+  assert.equal(result.payload.body, GOOD_BODY);
+  assert.equal(upstreamCalled, false, 'a good disk hit must not consume upstream rate-limiter quota');
 });

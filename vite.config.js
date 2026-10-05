@@ -245,6 +245,19 @@ const OVERPASS_BOUNDARY_DISK_TTL_MS = 30 * 86_400_000;
 const OVERPASS_DISK_DIR = path.join(process.cwd(), '.gev-cache', 'overpass');
 /** Per-upstream fetch timeout (ms). */
 const OVERPASS_TIMEOUT_MS = 22000;
+/**
+ * Aggregate wall-clock budget (ms) for the WHOLE mirror cascade in
+ * fetchOverpassPayload(). With 4 mirrors at a 22 s per-mirror timeout each,
+ * an unresponsive (not just fast-failing) mirror could previously stretch a
+ * single request to 45-90+ s — well past what a user waits for and close to
+ * Cloudflare's own edge timeout, which then truncated the response into a
+ * non-JSON error page (traffic audit, 2026-10-05: "stuck on LOADING" after
+ * the 406 failover fix). Each mirror attempt's own timeout is capped to
+ * whatever remains of this budget, and no further mirror is tried once it
+ * is exhausted — last-good cached data (if any) still wins via the route's
+ * existing stale-serve path; this only bounds how long a cache MISS can run.
+ */
+const OVERPASS_AGGREGATE_TIMEOUT_MS = 10000;
 /** Max entries in the Overpass response cache (LRU-like, oldest evicted first). */
 const OVERPASS_CACHE_MAX_ENTRIES = 120;
 /** @type {Map<string,{status:number,body:string,contentType:string,endpoint:string,cachedAt:number}>} */
@@ -364,13 +377,22 @@ function overpassDiskPath(cacheKey) {
 /**
  * Read a disk-cached Overpass payload. maxAgeMs Infinity = any age (the
  * serve-stale path when every mirror is down).
+ *
+ * A persisted entry whose status is >= 400 is never a usable response — it
+ * is an error page a pre-hardening (or future) bug let through the write
+ * admission check — so it is rejected here regardless of age, the same way
+ * the write path now rejects it going in. This is read-side poison
+ * rejection, not deletion: a fresh successful fetch overwrites the file
+ * through the normal write-on-success flow.
+ *
  * @returns {Promise<?Object>} Payload with cachedAt, or null.
  */
-async function readOverpassDisk(cacheKey, maxAgeMs) {
+export async function readOverpassDisk(cacheKey, maxAgeMs) {
   try {
     const raw = await fsp.readFile(overpassDiskPath(cacheKey), 'utf8');
     const payload = JSON.parse(raw);
     if (!payload || typeof payload.body !== 'string' || !Number.isFinite(payload.cachedAt)) return null;
+    if (Number.isFinite(payload.status) && payload.status >= 400) return null;
     if (Date.now() - payload.cachedAt > maxAgeMs) return null;
     return payload;
   } catch {
@@ -378,9 +400,13 @@ async function readOverpassDisk(cacheKey, maxAgeMs) {
   }
 }
 
-/** Fire-and-forget disk write for a successful Overpass payload. */
-function writeOverpassDisk(cacheKey, payload) {
-  fsp.mkdir(OVERPASS_DISK_DIR, { recursive: true })
+/**
+ * Fire-and-forget disk write for a successful Overpass payload. Returns the
+ * underlying promise (existing callers ignore it; tests can await it to
+ * write deterministically before reading the file back).
+ */
+export function writeOverpassDisk(cacheKey, payload) {
+  return fsp.mkdir(OVERPASS_DISK_DIR, { recursive: true })
     .then(() => fsp.writeFile(overpassDiskPath(cacheKey), JSON.stringify(payload)))
     .catch((err) => console.warn('[Overpass Proxy] disk cache write failed:', err?.message || err));
 }
@@ -2850,21 +2876,41 @@ function sendOverpassResponse(res, payload, cacheStatus = 'MISS') {
  * Skips rate-limited, runtime-error-body, and any non-2xx response (5xx, or
  * an unexpected 4xx such as a mirror-specific 406) and falls through to the
  * next mirror — a misbehaving mirror must never be returned/cached as if its
- * error page were valid Overpass data. If all mirrors fail, returns the last
- * rate-limited payload (if any) or throws the last error.
+ * error page were valid Overpass data. The whole cascade is bounded by
+ * OVERPASS_AGGREGATE_TIMEOUT_MS: once exhausted, no further mirror is tried,
+ * even if earlier ones failed fast and time remains for their own 22 s
+ * per-mirror timeout individually. If all mirrors fail (or the budget runs
+ * out), returns the last rate-limited payload (if any) or throws the last
+ * error.
  *
  * @param {string} body - URL-encoded Overpass QL query body.
  * @param {number} [maxResponseBytes] Endpoint-specific response cap.
  * @param {typeof fetch} [fetchImpl=fetch] Injectable for tests; real fetch otherwise.
+ * @param {number} [aggregateTimeoutMs=OVERPASS_AGGREGATE_TIMEOUT_MS] Injectable for tests.
  * @returns {Promise<{status:number,body:string,contentType:string,endpoint:string,rateLimited:boolean}>}
  */
-export async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPONSE_BYTES, fetchImpl = fetch) {
+export async function fetchOverpassPayload(
+  body,
+  maxResponseBytes = OVERPASS_MAX_RESPONSE_BYTES,
+  fetchImpl = fetch,
+  aggregateTimeoutMs = OVERPASS_AGGREGATE_TIMEOUT_MS,
+) {
   let lastError = null;
   let lastRateLimitPayload = null;
+  const deadline = Date.now() + aggregateTimeoutMs;
 
   for (const endpoint of OVERPASS_UPSTREAMS) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      // Aggregate budget exhausted — stop trying further mirrors rather than
+      // let an unresponsive one stretch the whole request toward Cloudflare's
+      // own edge timeout. Cache admission never sees this: a thrown error is
+      // not a cacheable payload.
+      lastError = lastError || new Error('Overpass aggregate timeout exceeded');
+      break;
+    }
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), Math.min(OVERPASS_TIMEOUT_MS, remainingMs));
 
     try {
       const upstream = await fetchImpl(endpoint, {

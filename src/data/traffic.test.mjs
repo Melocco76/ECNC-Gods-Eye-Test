@@ -8,6 +8,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import trafficLayer, {
+  armOverpassFetchTimeout,
+  CLIENT_OVERPASS_FETCH_TIMEOUT_MS,
   deriveTrafficFlowError,
   trafficFeedPresentation,
 } from './traffic.js';
@@ -150,4 +152,55 @@ test('the shipped layer boots keyless-honest before any status check', () => {
   assert.equal(stats.error, null);
   assert.ok(!LIVE_CLAIM.test(stats.loadingLabel), `boot label implies live data: ${stats.loadingLabel}`);
   assert.equal(layerFeedState(stats), 'fallback');
+});
+
+// ── Client-side /api/overpass timeout (traffic audit, 2026-10-05: "stuck on
+// LOADING" after the 406 mirror-failover fix made a genuine cache miss take
+// 45-90s server-side, which the browser then waited out with no ceiling of
+// its own). armOverpassFetchTimeout() is the small, pure timer mechanism
+// loadRoadsForBounds() arms around each fetchRoads() call; its own try/finally
+// (unchanged by this fix) is what actually clears _fetching/stats.loading
+// once the resulting AbortError is caught — verified live against a mocked
+// never-resolving Overpass upstream, not duplicated here with a Cesium fake.
+
+test('armOverpassFetchTimeout aborts its controller after the given timeout', async () => {
+  const { controller, clear } = armOverpassFetchTimeout(15);
+  assert.equal(controller.signal.aborted, false);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(controller.signal.aborted, true, 'the controller must abort once the timeout elapses');
+  clear();
+});
+
+test('armOverpassFetchTimeout: clear() prevents the timeout from firing', async () => {
+  const { controller, clear } = armOverpassFetchTimeout(15);
+  clear();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(controller.signal.aborted, false, 'a cleared timer must never abort a completed fetch');
+});
+
+test('armOverpassFetchTimeout: manual abort before the timer still works (idempotent with the timeout)', async () => {
+  const { controller, clear } = armOverpassFetchTimeout(15);
+  controller.abort();
+  assert.equal(controller.signal.aborted, true, 'manual cancellation (camera move / layer disable) is unaffected');
+  // The timer firing later on an already-aborted controller must not throw.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  clear();
+});
+
+test('armOverpassFetchTimeout: each call is independent — no shared timer state between instances', async () => {
+  const a = armOverpassFetchTimeout(15);
+  const b = armOverpassFetchTimeout(100000);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(a.controller.signal.aborted, true, 'the short-timeout instance fired');
+  assert.equal(b.controller.signal.aborted, false, 'the long-timeout instance is unaffected by the other');
+  a.clear();
+  b.clear();
+});
+
+test('the default client Overpass fetch timeout is set above the server aggregate budget', () => {
+  // vite.config.js OVERPASS_AGGREGATE_TIMEOUT_MS is 10_000 — the client ceiling
+  // must be comfortably above it so the server's own bounded failure is what
+  // surfaces first, not a client-side race against it.
+  assert.ok(CLIENT_OVERPASS_FETCH_TIMEOUT_MS > 10000, 'client timeout should exceed the server aggregate budget');
+  assert.ok(CLIENT_OVERPASS_FETCH_TIMEOUT_MS <= 20000, 'client timeout should not itself reintroduce a long wait');
 });

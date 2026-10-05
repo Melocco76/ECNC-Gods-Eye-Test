@@ -43,6 +43,17 @@ import { holdContinuousRender, releaseContinuousRender } from '../renderGovernor
 
 /** @const {string} Proxy endpoint for Overpass API queries */
 const OVERPASS_URL = '/api/overpass';
+/**
+ * Milliseconds the browser waits for one /api/overpass round trip before
+ * giving up locally. Set slightly above the server's own aggregate
+ * mirror-cascade budget (vite.config.js OVERPASS_AGGREGATE_TIMEOUT_MS, 10 s)
+ * so a slow server is what surfaces first, not a client-side race against
+ * it — before this, the client had no ceiling of its own and simply waited
+ * as long as the server took, which could be 45-90+ s (traffic audit,
+ * 2026-10-05: "stuck on LOADING"). Exported so the timer mechanism itself is
+ * testable without a Cesium viewer.
+ */
+export const CLIENT_OVERPASS_FETCH_TIMEOUT_MS = 13000;
 /** @const {number} Meters — hide all traffic dots above this camera altitude */
 const ACTIVATION_ALTITUDE = 8000;
 /** @const {number} Meters — above this altitude, only major roads are fetched */
@@ -1198,6 +1209,24 @@ function cancelActiveFetch() {
   }
 }
 
+/**
+ * One AbortController for a single /api/overpass attempt, timed out on its
+ * OWN instance rather than the mutable `_activeFetchAbort` binding — a timer
+ * that re-read that binding when it fired could abort a LATER, unrelated
+ * fetch if the binding had already moved on to a new controller. Camera-move
+ * / layer-disable cancellation (`cancelActiveFetch()`) still works exactly as
+ * before: it aborts the same controller instance assigned to
+ * `_activeFetchAbort`, so whichever of the two (manual cancel or this
+ * timeout) fires first wins; `AbortController.abort()` is idempotent.
+ * @param {number} [timeoutMs=CLIENT_OVERPASS_FETCH_TIMEOUT_MS] Injectable for tests.
+ * @returns {{controller: AbortController, clear: () => void}}
+ */
+export function armOverpassFetchTimeout(timeoutMs = CLIENT_OVERPASS_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  return { controller, clear: () => clearTimeout(timeoutId) };
+}
+
 // ─── Live Flow (TomTom) ────────────────────────────────────
 
 /**
@@ -2092,13 +2121,19 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
       renderedSomething = true;
     } else {
       // Fetch major roads first (smaller payload, faster response)
-      _activeFetchAbort = new AbortController();
+      const majorFetch = armOverpassFetchTimeout();
+      _activeFetchAbort = majorFetch.controller;
       console.log(`[Data:Traffic] Fast fetch major roads [${cacheKey}]`);
-      const majorData = await fetchRoads(
-        clamped.south, clamped.west, clamped.north, clamped.east,
-        { majorOnly: true, timeoutSec: 12, signal: _activeFetchAbort.signal },
-        trace,
-      );
+      let majorData;
+      try {
+        majorData = await fetchRoads(
+          clamped.south, clamped.west, clamped.north, clamped.east,
+          { majorOnly: true, timeoutSec: 12, signal: majorFetch.controller.signal },
+          trace,
+        );
+      } finally {
+        majorFetch.clear();
+      }
       // Discard stale response if a newer load was triggered while waiting
       if (generation !== _loadGeneration) return;
       cache.major = _parseRoads(majorData, trace);
@@ -2112,13 +2147,19 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
     if (altitude > FAST_FETCH_ALTITUDE) return;
 
     // Detailed pass: fetch the full road graph (tertiary, residential, etc.)
-    _activeFetchAbort = new AbortController();
+    const fullFetch = armOverpassFetchTimeout();
+    _activeFetchAbort = fullFetch.controller;
     console.log(`[Data:Traffic] Full fetch local roads [${cacheKey}]`);
-    const fullData = await fetchRoads(
-      clamped.south, clamped.west, clamped.north, clamped.east,
-      { majorOnly: false, timeoutSec: 20, signal: _activeFetchAbort.signal },
-      trace,
-    );
+    let fullData;
+    try {
+      fullData = await fetchRoads(
+        clamped.south, clamped.west, clamped.north, clamped.east,
+        { majorOnly: false, timeoutSec: 20, signal: fullFetch.controller.signal },
+        trace,
+      );
+    } finally {
+      fullFetch.clear();
+    }
     if (generation !== _loadGeneration) return;
 
     cache.full = _parseRoads(fullData, trace);
