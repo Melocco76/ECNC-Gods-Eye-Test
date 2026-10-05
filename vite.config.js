@@ -2847,15 +2847,18 @@ function sendOverpassResponse(res, payload, cacheStatus = 'MISS') {
 /**
  * Try each Overpass upstream in order until one succeeds.
  *
- * Skips rate-limited or 5xx responses and falls through to the next
- * mirror. If all mirrors fail, returns the last rate-limited payload
- * (if any) or throws the last error.
+ * Skips rate-limited, runtime-error-body, and any non-2xx response (5xx, or
+ * an unexpected 4xx such as a mirror-specific 406) and falls through to the
+ * next mirror — a misbehaving mirror must never be returned/cached as if its
+ * error page were valid Overpass data. If all mirrors fail, returns the last
+ * rate-limited payload (if any) or throws the last error.
  *
  * @param {string} body - URL-encoded Overpass QL query body.
  * @param {number} [maxResponseBytes] Endpoint-specific response cap.
+ * @param {typeof fetch} [fetchImpl=fetch] Injectable for tests; real fetch otherwise.
  * @returns {Promise<{status:number,body:string,contentType:string,endpoint:string,rateLimited:boolean}>}
  */
-async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPONSE_BYTES) {
+export async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPONSE_BYTES, fetchImpl = fetch) {
   let lastError = null;
   let lastRateLimitPayload = null;
 
@@ -2864,7 +2867,7 @@ async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPON
     const timeoutId = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
 
     try {
-      const upstream = await fetch(endpoint, {
+      const upstream = await fetchImpl(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -2898,7 +2901,10 @@ async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPON
         lastError = new Error(`Overpass runtime error (${endpoint})`);
         continue;
       }
-      if (status >= 500) {
+      // Any non-2xx (5xx, or an unexpected 4xx like a mirror-specific 406) is
+      // not usable data — try the next mirror rather than returning/caching
+      // an error page as if it were a real response.
+      if (status >= 400) {
         lastError = new Error(`Overpass upstream returned ${status} (${endpoint})`);
         continue;
       }
@@ -2927,9 +2933,11 @@ async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPON
  * OVERPASS_CACHE_MS. Concurrent identical queries share a single upstream
  * request via the in-flight map.
  *
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl] Injectable for tests; real fetch otherwise.
  * @returns {import('vite').Plugin}
  */
-function overpassProxy() {
+export function overpassProxy({ fetchImpl = null } = {}) {
   const install = (server) => {
       server.middlewares.use('/api/overpass', async (req, res) => {
         // Hoisted out of the try so the catch's serve-stale lookup can see it
@@ -3003,9 +3011,9 @@ function overpassProxy() {
             return;
           }
           _overpassConcurrent += 1;
-          const requestPromise = fetchOverpassPayload(safeBody)
+          const requestPromise = fetchOverpassPayload(safeBody, undefined, fetchImpl || fetch)
             .then((payload) => {
-              if (payload.status < 500 && !payload.rateLimited && !payload.runtimeError) {
+              if (payload.status < 400 && !payload.rateLimited && !payload.runtimeError) {
                 const entry = { ...payload, cachedAt: Date.now() };
                 _overpassCache.set(cacheKey, entry);
                 trimOverpassCache();
