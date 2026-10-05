@@ -56,6 +56,36 @@ export function isWithinCoverageBbox(lat, lon, bbox) {
 }
 
 /**
+ * Strict bbox shape check: finite values, valid WGS84 ranges, and a
+ * non-inverted box (south < north, west < east — this provider generation
+ * does not support a dateline-crossing viewport).
+ * @param {{south:number, west:number, north:number, east:number}} bbox
+ * @returns {boolean}
+ */
+export function isValidBboxShape(bbox) {
+  if (!bbox) return false;
+  const { south, west, north, east } = bbox;
+  if (![south, west, north, east].every((value) => typeof value === 'number' && Number.isFinite(value))) return false;
+  if (!isValidLatitude(south) || !isValidLatitude(north) || south >= north) return false;
+  if (!isValidLongitude(west) || !isValidLongitude(east) || west >= east) return false;
+  return true;
+}
+
+/**
+ * Property Intelligence A2.1 — does a requested viewport bbox overlap a
+ * provider's coverage bbox at all? Standard axis-aligned rectangle overlap
+ * test (not a point test like `isWithinCoverageBbox` above): two boxes
+ * overlap unless one is entirely north/south/east/west of the other.
+ * @param {{south:number, west:number, north:number, east:number}} a
+ * @param {{south:number, west:number, north:number, east:number}} b
+ * @returns {boolean}
+ */
+export function bboxIntersectsBbox(a, b) {
+  if (!a || !b) return false;
+  return a.west <= b.east && a.east >= b.west && a.south <= b.north && a.north >= b.south;
+}
+
+/**
  * Strict parcel-id format check against a provider-supplied pattern. The
  * caller (a provider module) owns the actual RegExp; this just applies it
  * uniformly and rejects non-strings up front.

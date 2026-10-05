@@ -58,8 +58,13 @@ import {
 import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
-import { getParcelProviderConfig, isKnownParcelRegion, resolveParcelProvider } from './src/data/parcelProviderRegistry.js';
-import { toPublicParcel } from './src/data/parcelProviderData.js';
+import {
+  getParcelProviderConfig,
+  isKnownParcelRegion,
+  listParcelRegions,
+  resolveParcelProvider,
+} from './src/data/parcelProviderRegistry.js';
+import { bboxIntersectsBbox, isValidBboxShape, isWithinCoverageBbox, toPublicParcel } from './src/data/parcelProviderData.js';
 import { createAdsbLolHistoryService } from './src/data/adsbLolTrace.js';
 import {
   ADMIN_LOGIN_BODY_MAX_BYTES,
@@ -5817,7 +5822,7 @@ function trackBackfillProxies() {
 }
 
 /**
- * Vite plugin: Property/Parcel Intelligence Phase A1 — read-only, on-demand
+ * Vite plugin: Property/Parcel Intelligence — read-only, on-demand
  * public-record parcel lookup. See `docs/PROPERTY-INTELLIGENCE.md` for the
  * design intent this route deliberately does NOT deviate from:
  *  - no arbitrary URL proxy — `region` is looked up in the fixed
@@ -5829,10 +5834,22 @@ function trackBackfillProxies() {
  *  - owner name may be normalized internally by the provider but is never
  *    exposed by any route here in a searchable/bulk form — there is no
  *    owner-name parameter anywhere below.
- * Phase A1 ships no map layer and no UI panel; these routes exist only so a
- * later phase's client code has something real to call.
+ * Phase A1 (search/identify/detail/geometry) ships no map layer and no UI
+ * panel; these routes exist only so a later phase's client code has
+ * something real to call.
+ *
+ * Phase A2.1 adds the server contract a map layer needs, still with no
+ * Cesium/UI code anywhere in this repo yet:
+ *  - GET /coverage?lat=&lon= — registry-driven "does any provider cover this
+ *    point", with no region input and no frontend/provider-specific
+ *    branching (it walks `listParcelRegions()`);
+ *  - GET /viewport?region=&south=&west=&north=&east= — bounded parcel
+ *    outlines for a map viewport (identity + geometry only, never full
+ *    parcel detail), capped by MAX_PARCEL_VIEWPORT_DEGREES (span) and
+ *    MAX_VIEWPORT_PARCELS (count) — both server-enforced, never
+ *    caller-raisable.
  */
-function parcelsProxy() {
+export function parcelsProxy({ fetchImpl = null } = {}) {
   const PARCEL_UPSTREAM_TIMEOUT_MS = 8_000;
   const PARCEL_RESPONSE_CAP_BYTES = 512 * 1024;
   const PARCEL_CACHE_MAX = 300;
@@ -5840,17 +5857,27 @@ function parcelsProxy() {
   const SEARCH_TTL_MS = 5 * 60_000;
   const BY_ID_TTL_MS = 30 * 60_000;
   const GEOMETRY_TTL_MS = 45 * 60_000;
+  const VIEWPORT_TTL_MS = 45 * 60_000;
+  // Property Intelligence A2.1 — a strict initial viewport cap. 0.08° is
+  // roughly 8-9 km at Deschutes County's latitude; wide enough for a useful
+  // "zoomed into a neighborhood" view, far below "fetch a whole county".
+  const MAX_PARCEL_VIEWPORT_DEGREES = 0.08;
+  // Server-side only; the caller (a future map layer) can never raise this.
+  const MAX_VIEWPORT_PARCELS = 400;
 
   const _identifyCache = new Map();
   const _searchCache = new Map();
   const _byIdCache = new Map();
   const _geometryCache = new Map();
+  const _viewportCache = new Map();
   const _inFlight = new Map();
 
   const _searchLimiter = makeRateLimiter({ windowMs: 60_000, max: 40, globalMax: 150 });
   const _identifyLimiter = makeRateLimiter({ windowMs: 60_000, max: 60, globalMax: 200 });
   const _byIdLimiter = makeRateLimiter({ windowMs: 60_000, max: 60, globalMax: 200 });
   const _geometryLimiter = makeRateLimiter({ windowMs: 60_000, max: 60, globalMax: 200 });
+  const _viewportLimiter = makeRateLimiter({ windowMs: 60_000, max: 40, globalMax: 150 });
+  const _coverageLimiter = makeRateLimiter({ windowMs: 60_000, max: 90, globalMax: 300 });
 
   function cacheGet(cache, key, ttlMs) {
     const entry = cache.get(key);
@@ -5865,7 +5892,7 @@ function parcelsProxy() {
 
   function providerFor(region) {
     return resolveParcelProvider(region, {
-      fetchImpl: (...args) => globalThis.fetch(...args),
+      fetchImpl: fetchImpl || ((...args) => globalThis.fetch(...args)),
       readCapped: (response) => readCappedResponseText(response, PARCEL_RESPONSE_CAP_BYTES),
       timeoutMs: PARCEL_UPSTREAM_TIMEOUT_MS,
       responseCapBytes: PARCEL_RESPONSE_CAP_BYTES,
@@ -5890,6 +5917,33 @@ function parcelsProxy() {
       }
       const incoming = new URL(req.url || '', 'http://localhost');
       const urlPath = incoming.pathname; // already stripped of the '/api/parcels' mount prefix
+
+      // Coverage answers "which region (if any) covers this point" — it takes
+      // lat/lon, not a region, so it must run BEFORE the region gate below.
+      // No frontend/Deschutes-specific branching: this walks the registry.
+      if (urlPath === '/coverage') {
+        if (!_coverageLimiter(clientKey(req))) { sendJson(res, 429, { error: 'Rate limit exceeded' }); return; }
+        const lat = requiredFiniteQueryNumber(incoming.searchParams, 'lat');
+        const lon = requiredFiniteQueryNumber(incoming.searchParams, 'lon');
+        if (lat === null || lon === null || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+          sendJson(res, 400, { error: 'lat and lon must be finite numbers within valid ranges.' });
+          return;
+        }
+        for (const candidateRegion of listParcelRegions()) {
+          const providerConfig = getParcelProviderConfig(candidateRegion);
+          if (providerConfig && isWithinCoverageBbox(lat, lon, providerConfig.coverageBbox)) {
+            sendJson(res, 200, {
+              region: providerConfig.region,
+              providerId: providerConfig.providerId,
+              sourceAgency: providerConfig.sourceAgency,
+            });
+            return;
+          }
+        }
+        sendJson(res, 200, { region: null });
+        return;
+      }
+
       const region = incoming.searchParams.get('region') || '';
 
       if (!isKnownParcelRegion(region)) {
@@ -5984,6 +6038,53 @@ function parcelsProxy() {
           const results = await promise;
           cacheSet(_searchCache, key, results);
           sendJson(res, 200, { results });
+          return;
+        }
+
+        if (urlPath === '/viewport') {
+          if (!_viewportLimiter(clientKey(req))) { sendJson(res, 429, { error: 'Rate limit exceeded' }); return; }
+          const bbox = {
+            south: requiredFiniteQueryNumber(incoming.searchParams, 'south'),
+            west: requiredFiniteQueryNumber(incoming.searchParams, 'west'),
+            north: requiredFiniteQueryNumber(incoming.searchParams, 'north'),
+            east: requiredFiniteQueryNumber(incoming.searchParams, 'east'),
+          };
+          if (!isValidBboxShape(bbox)) {
+            sendJson(res, 400, { error: 'south/west/north/east must be finite numbers describing a valid, non-inverted bounding box.' });
+            return;
+          }
+          const providerConfig = getParcelProviderConfig(region);
+          if (!providerConfig || !bboxIntersectsBbox(bbox, providerConfig.coverageBbox)) {
+            sendJson(res, 400, { error: 'Viewport does not intersect this region’s coverage.' });
+            return;
+          }
+          // Strict, server-enforced span cap — the caller can never raise it.
+          // Property Intelligence A2 audit: a dense parcel grid over an
+          // uncapped viewport is the "fetch an entire county" failure mode
+          // this guards against.
+          if (bbox.north - bbox.south > MAX_PARCEL_VIEWPORT_DEGREES || bbox.east - bbox.west > MAX_PARCEL_VIEWPORT_DEGREES) {
+            sendJson(res, 400, { error: `Viewport is too large; each side must be at most ${MAX_PARCEL_VIEWPORT_DEGREES} degrees.` });
+            return;
+          }
+          const key = `${region}:${bbox.south.toFixed(4)},${bbox.west.toFixed(4)},${bbox.north.toFixed(4)},${bbox.east.toFixed(4)}`;
+          const cached = cacheGet(_viewportCache, key, VIEWPORT_TTL_MS);
+          if (cached !== undefined) { sendJson(res, 200, cached); return; }
+          const { promise } = coalesceProxyRequest(_inFlight, `viewport:${key}`, async () => {
+            const provider = providerFor(region);
+            return provider
+              ? provider.getParcelsInViewport(bbox, { maxResults: MAX_VIEWPORT_PARCELS })
+              : { parcels: [], saturated: false };
+          });
+          const result = await promise;
+          const payload = {
+            region,
+            providerId: providerConfig.providerId,
+            parcels: result.parcels,
+            count: result.parcels.length,
+            saturated: result.saturated,
+          };
+          cacheSet(_viewportCache, key, payload);
+          sendJson(res, 200, payload);
           return;
         }
 

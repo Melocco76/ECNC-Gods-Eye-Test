@@ -4,10 +4,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  bboxIntersectsBbox,
   buildNormalizedParcel,
   buildSearchResult,
   escapeArcgisTextLiteral,
   esriPolygonToGeoJsonGeometry,
+  isValidBboxShape,
   isValidLatitude,
   isValidLongitude,
   isValidParcelId,
@@ -41,6 +43,29 @@ test('coverage bbox rejects points outside Deschutes County and any invalid coor
   assert.equal(isWithinCoverageBbox(37.77, -122.41, BBOX), false, 'San Francisco is outside');
   assert.equal(isWithinCoverageBbox(NaN, -121.3, BBOX), false);
   assert.equal(isWithinCoverageBbox(44.05, -121.3, null), false);
+});
+
+// -- viewport bbox validators: Property Intelligence A2.1 ------------------------------------------
+
+test('isValidBboxShape accepts a well-formed box and rejects every malformed variant', () => {
+  assert.equal(isValidBboxShape({ south: 44.05, west: -121.32, north: 44.06, east: -121.31 }), true);
+  assert.equal(isValidBboxShape({ south: NaN, west: -121.32, north: 44.06, east: -121.31 }), false, 'non-finite');
+  assert.equal(isValidBboxShape({ south: 44.05, west: -121.32, north: 44.06 }), false, 'missing east');
+  assert.equal(isValidBboxShape({ south: 44.06, west: -121.32, north: 44.05, east: -121.31 }), false, 'inverted south/north');
+  assert.equal(isValidBboxShape({ south: 44.05, west: -121.31, north: 44.06, east: -121.32 }), false, 'inverted west/east');
+  assert.equal(isValidBboxShape({ south: -95, west: -121.32, north: 44.06, east: -121.31 }), false, 'south out of range');
+  assert.equal(isValidBboxShape({ south: 44.05, west: -185, north: 44.06, east: -121.31 }), false, 'west out of range');
+  assert.equal(isValidBboxShape(null), false);
+});
+
+test('bboxIntersectsBbox detects overlap and rejects boxes that are entirely north/south/east/west of each other', () => {
+  const coverage = BBOX; // Deschutes County coverage
+  assert.equal(bboxIntersectsBbox({ south: 44.05, west: -121.32, north: 44.06, east: -121.31 }, coverage), true, 'fully inside');
+  assert.equal(bboxIntersectsBbox({ south: 43.0, west: -121.32, north: 43.6, east: -121.31 }, coverage), true, 'straddles the southern edge');
+  assert.equal(bboxIntersectsBbox({ south: 45.5, west: -122.6, north: 45.6, east: -122.5 }, coverage), false, 'Portland, entirely north and outside');
+  assert.equal(bboxIntersectsBbox({ south: 37.7, west: -122.5, north: 37.8, east: -122.4 }, coverage), false, 'San Francisco, entirely outside');
+  assert.equal(bboxIntersectsBbox(null, coverage), false);
+  assert.equal(bboxIntersectsBbox(coverage, null), false);
 });
 
 test('parcel-id format check matches real Deschutes taxlot ids and rejects everything else', () => {

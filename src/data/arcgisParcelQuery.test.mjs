@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   buildContainsAnyWhere,
+  buildEnvelopeQueryUrl,
   buildExactMatchWhere,
   buildPointIdentifyUrl,
   buildQueryUrl,
@@ -71,4 +72,42 @@ test('contains-any where clause with one field produces one LIKE term, not a dan
 test('the base layer URL is always the caller-supplied fixed string — nothing here can redirect to a different host', () => {
   const url = buildPointIdentifyUrl('https://services1.arcgis.com/znO8Hz1SuVVohYhZ/arcgis/rest/services/Taxlots/FeatureServer/0', 44, -121);
   assert.match(url, /^https:\/\/services1\.arcgis\.com\/znO8Hz1SuVVohYhZ\//);
+});
+
+// -- envelope ("viewport") query — Property Intelligence A2.1 ---------------------------------------
+
+const DESCHUTES_BBOX = { south: 44.05, west: -121.32, north: 44.06, east: -121.31 };
+
+test('envelope query builds geometry/geometryType/spatialRel/inSR/outSR correctly', () => {
+  const url = new URL(buildEnvelopeQueryUrl(TAXLOT_LAYER, DESCHUTES_BBOX, { outFields: 'TAXLOT' }));
+  assert.equal(url.searchParams.get('geometry'), '-121.32,44.05,-121.31,44.06', 'west,south,east,north order for esriGeometryEnvelope');
+  assert.equal(url.searchParams.get('geometryType'), 'esriGeometryEnvelope');
+  assert.equal(url.searchParams.get('inSR'), '4326');
+  assert.equal(url.searchParams.get('outSR'), '4326');
+  assert.equal(url.searchParams.get('spatialRel'), 'esriSpatialRelIntersects');
+  assert.equal(url.searchParams.get('outFields'), 'TAXLOT', 'only the identity field requested, not *');
+});
+
+test('envelope query defaults returnGeometry to true and omits resultRecordCount unless given', () => {
+  const defaulted = new URL(buildEnvelopeQueryUrl(TAXLOT_LAYER, DESCHUTES_BBOX));
+  assert.equal(defaulted.searchParams.get('returnGeometry'), 'true');
+  assert.equal(defaulted.searchParams.has('resultRecordCount'), false);
+
+  const bounded = new URL(buildEnvelopeQueryUrl(TAXLOT_LAYER, DESCHUTES_BBOX, { resultRecordCount: 401 }));
+  assert.equal(bounded.searchParams.get('resultRecordCount'), '401', 'caller-supplied bound (cap+1) is forwarded as-is');
+});
+
+test('envelope query never requests owner fields by default (identity-only outFields)', () => {
+  const url = new URL(buildEnvelopeQueryUrl(TAXLOT_LAYER, DESCHUTES_BBOX, { outFields: 'TAXLOT' }));
+  assert.doesNotMatch(url.searchParams.get('outFields') || '', /owner/i);
+});
+
+test('a malformed bbox is rejected (null), never emitted as a URL with garbage coordinates', () => {
+  assert.equal(buildEnvelopeQueryUrl(TAXLOT_LAYER, { south: NaN, west: -121.32, north: 44.06, east: -121.31 }), null, 'non-finite south');
+  assert.equal(buildEnvelopeQueryUrl(TAXLOT_LAYER, { south: 44.05, west: -121.32, north: 44.06 }), null, 'missing east');
+  assert.equal(buildEnvelopeQueryUrl(TAXLOT_LAYER, { south: 44.06, west: -121.32, north: 44.05, east: -121.31 }), null, 'inverted south/north');
+  assert.equal(buildEnvelopeQueryUrl(TAXLOT_LAYER, { south: 44.05, west: -121.31, north: 44.06, east: -121.32 }), null, 'inverted west/east');
+  assert.equal(buildEnvelopeQueryUrl(TAXLOT_LAYER, { south: -95, west: -121.32, north: 44.06, east: -121.31 }), null, 'south out of latitude range');
+  assert.equal(buildEnvelopeQueryUrl(TAXLOT_LAYER, { south: 44.05, west: -185, north: 44.06, east: -121.31 }), null, 'west out of longitude range');
+  assert.equal(buildEnvelopeQueryUrl(TAXLOT_LAYER, null), null, 'missing bbox entirely');
 });

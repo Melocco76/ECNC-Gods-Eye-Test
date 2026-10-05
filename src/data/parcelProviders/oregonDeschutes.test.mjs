@@ -230,6 +230,95 @@ test('getParcelGeometry rejects an invalid id without any network call', async (
   assert.deepEqual(calls, []);
 });
 
+// -- viewport parcels: Property Intelligence A2.1 — bounded, identity-only, one query ----------------
+
+const DESCHUTES_VIEWPORT_BBOX = { south: 44.3930, west: -121.7362, north: 44.3934, east: -121.7358 };
+
+function taxlotFeature(taxlot, { withGeometry = true } = {}) {
+  return {
+    attributes: { TAXLOT: taxlot, MAPNUMBER: '14080000000', DIAL: `http://dial.deschutes.org/results/taxlot?value=${taxlot}`, 'Shape__Area': 4046.8564224 },
+    geometry: withGeometry ? TAXLOT_FEATURE.geometry : null,
+  };
+}
+
+test('getParcelsInViewport makes exactly ONE query, against the taxlot layer only', async () => {
+  const f = fakeFetch([[TAXLOT_URL, okJson({ features: [taxlotFeature('1408000000200'), taxlotFeature('1408000000300')] })]]);
+  const provider = createOregonDeschutesProvider({ config, fetchImpl: f.impl, readCapped: passthroughReadCapped });
+  const result = await provider.getParcelsInViewport(DESCHUTES_VIEWPORT_BBOX);
+  assert.equal(f.calls.length, 1, 'one viewport query only — no per-parcel detail/zoning/improvement calls');
+  assert.ok(f.calls[0].startsWith(TAXLOT_URL));
+});
+
+test('getParcelsInViewport returns parcel identity + valid GeoJSON geometry, nothing else', async () => {
+  const f = fakeFetch([[TAXLOT_URL, okJson({ features: [taxlotFeature('1408000000200')] })]]);
+  const provider = createOregonDeschutesProvider({ config, fetchImpl: f.impl, readCapped: passthroughReadCapped });
+  const { parcels, saturated } = await provider.getParcelsInViewport(DESCHUTES_VIEWPORT_BBOX);
+  assert.equal(saturated, false);
+  assert.equal(parcels.length, 1);
+  assert.deepEqual(Object.keys(parcels[0]).sort(), ['geometry', 'parcelId']);
+  assert.equal(parcels[0].parcelId, '1408000000200');
+  assert.equal(parcels[0].geometry.type, 'Polygon');
+});
+
+test('getParcelsInViewport never queries owner/assessor/improvements/rollValues/zoning — identity fields only', () => {
+  const src = createOregonDeschutesProvider.toString();
+  const start = src.indexOf('async getParcelsInViewport');
+  const fn = src.slice(start, start + src.slice(start).indexOf('\n    },'));
+  assert.equal(/owners|assessorAccount|rollValues|improvements|zoning|fetchZoning|fetchRelatedOne|assembleFromTaxlotFeature/i.test(fn), false, 'viewport path must stay geometry/identity-only, no per-parcel detail assembly');
+});
+
+test('getParcelsInViewport requests outFields limited to the taxlot id field — never "*", never an owner field', async () => {
+  const f = fakeFetch([[TAXLOT_URL, okJson({ features: [] })]]);
+  const provider = createOregonDeschutesProvider({ config, fetchImpl: f.impl, readCapped: passthroughReadCapped });
+  await provider.getParcelsInViewport(DESCHUTES_VIEWPORT_BBOX);
+  const calledUrl = new URL(f.calls[0]);
+  assert.equal(calledUrl.searchParams.get('outFields'), config.layers.taxlot.idField);
+  assert.doesNotMatch(calledUrl.searchParams.get('outFields') || '', /owner/i);
+});
+
+test('getParcelsInViewport honestly reports saturation when the upstream returns more than the cap', async () => {
+  const many = Array.from({ length: 5 }, (_, i) => taxlotFeature(`TL${i}`));
+  const f = fakeFetch([[TAXLOT_URL, okJson({ features: many })]]);
+  const provider = createOregonDeschutesProvider({ config, fetchImpl: f.impl, readCapped: passthroughReadCapped });
+  const { parcels, saturated } = await provider.getParcelsInViewport(DESCHUTES_VIEWPORT_BBOX, { maxResults: 3 });
+  assert.equal(parcels.length, 3, 'truncated to the cap, never silently returning more');
+  assert.equal(saturated, true, 'truncation must be surfaced honestly, not hidden');
+});
+
+test('getParcelsInViewport reports saturated:false when the result is under the cap', async () => {
+  const f = fakeFetch([[TAXLOT_URL, okJson({ features: [taxlotFeature('1408000000200'), taxlotFeature('1408000000300')] })]]);
+  const provider = createOregonDeschutesProvider({ config, fetchImpl: f.impl, readCapped: passthroughReadCapped });
+  const { parcels, saturated } = await provider.getParcelsInViewport(DESCHUTES_VIEWPORT_BBOX, { maxResults: 400 });
+  assert.equal(parcels.length, 2);
+  assert.equal(saturated, false);
+});
+
+test('getParcelsInViewport skips a feature with no parcel id or no decodable geometry, rather than throwing', async () => {
+  const badId = { attributes: { TAXLOT: '' }, geometry: TAXLOT_FEATURE.geometry };
+  const badGeometry = taxlotFeature('1408000000400', { withGeometry: false });
+  const good = taxlotFeature('1408000000200');
+  const f = fakeFetch([[TAXLOT_URL, okJson({ features: [badId, badGeometry, good] })]]);
+  const provider = createOregonDeschutesProvider({ config, fetchImpl: f.impl, readCapped: passthroughReadCapped });
+  const { parcels } = await provider.getParcelsInViewport(DESCHUTES_VIEWPORT_BBOX);
+  assert.deepEqual(parcels.map((p) => p.parcelId), ['1408000000200']);
+});
+
+test('getParcelsInViewport degrades to an empty, non-saturated result on upstream failure (timeout/5xx/thrown) — same convention as other provider methods', async () => {
+  for (const respond of [httpError(503), throwing]) {
+    const f = fakeFetch([[TAXLOT_URL, respond]]);
+    const provider = createOregonDeschutesProvider({ config, fetchImpl: f.impl, readCapped: passthroughReadCapped });
+    const result = await provider.getParcelsInViewport(DESCHUTES_VIEWPORT_BBOX);
+    assert.deepEqual(result, { parcels: [], saturated: false });
+  }
+});
+
+test('getParcelsInViewport returns an empty result for a malformed bbox WITHOUT any network call', async () => {
+  const { provider, calls } = fullProvider();
+  const result = await provider.getParcelsInViewport({ south: 44.06, west: -121.32, north: 44.05, east: -121.31 });
+  assert.deepEqual(result, { parcels: [], saturated: false });
+  assert.deepEqual(calls, []);
+});
+
 // -- address search: bounded, compact, no owner search anywhere ---------------------------------------
 
 test('searchAddress returns compact rows and queries ONLY the assessor-account table (never owners, never full parcel assembly)', async () => {

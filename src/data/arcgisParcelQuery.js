@@ -55,6 +55,42 @@ export function buildPointIdentifyUrl(layerBaseUrl, lat, lon, opts = {}) {
 }
 
 /**
+ * Envelope ("viewport") spatial query: "which features intersect this WGS84
+ * bounding box". Property Intelligence A2.1 — the viewport counterpart to
+ * `buildPointIdentifyUrl` above, same conventions (fixed `outSR=4326`,
+ * `spatialRel=esriSpatialRelIntersects`).
+ *
+ * Returns `null` for a malformed bbox (non-finite, out of WGS84 range, or
+ * inverted) rather than emitting a URL with garbage coordinates — this is a
+ * basic shape sanity check only. The caller (the route) still owns its own
+ * business-rule viewport-SIZE cap and `resultRecordCount` cap; this function
+ * does not decide how large a viewport is reasonable, only whether the four
+ * numbers describe a valid box at all.
+ *
+ * @param {string} layerBaseUrl
+ * @param {{south:number, west:number, north:number, east:number}} bbox - WGS84 degrees
+ * @param {{outFields?: string, resultRecordCount?: number, returnGeometry?: boolean}} [opts]
+ * @returns {string|null}
+ */
+export function buildEnvelopeQueryUrl(layerBaseUrl, bbox, opts = {}) {
+  const { south, west, north, east } = bbox || {};
+  if (![south, west, north, east].every((value) => typeof value === 'number' && Number.isFinite(value))) return null;
+  if (south < -90 || south > 90 || north < -90 || north > 90 || south >= north) return null;
+  if (west < -180 || west > 180 || east < -180 || east > 180 || west >= east) return null;
+
+  const { outFields = '*', resultRecordCount, returnGeometry = true } = opts;
+  return buildQueryUrl(layerBaseUrl, {
+    geometry: `${west},${south},${east},${north}`,
+    geometryType: 'esriGeometryEnvelope',
+    inSR: '4326',
+    spatialRel: 'esriSpatialRelIntersects',
+    outFields,
+    returnGeometry,
+    resultRecordCount,
+  });
+}
+
+/**
  * Attribute (`where`-clause) query. `whereClause` must already be built from
  * a fixed field name plus an escaped/validated literal — see
  * `buildExactMatchWhere` / `buildContainsAnyWhere` below.

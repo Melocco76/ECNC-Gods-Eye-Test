@@ -20,6 +20,7 @@
  */
 import {
   buildContainsAnyWhere,
+  buildEnvelopeQueryUrl,
   buildExactMatchWhere,
   buildPointIdentifyUrl,
   buildQueryUrl,
@@ -252,6 +253,40 @@ export function createOregonDeschutesProvider({
       const features = await queryFeatures(url);
       if (!features.length) return null;
       return esriPolygonToGeoJsonGeometry(features[0].geometry);
+    },
+
+    /**
+     * Property Intelligence A2.1 — parcel outlines for a map viewport. ONE
+     * spatial query against the taxlot layer only (`outFields` limited to the
+     * id field — no owner/assessor/improvements/rollValues table is ever
+     * joined here, unlike `assembleFromTaxlotFeature`'s per-parcel detail
+     * assembly). The caller (the route) owns the viewport-size cap; this
+     * method only owns the result-count cap, enforced here by asking for one
+     * more row than the cap so a truncation is detected rather than merely
+     * guessed at.
+     * @param {{south:number, west:number, north:number, east:number}} bbox - WGS84 degrees
+     * @param {{maxResults?: number}} [opts]
+     * @returns {Promise<{parcels: Array<{parcelId:string, geometry:object}>, saturated: boolean}>}
+     */
+    async getParcelsInViewport(bbox, { maxResults = 400 } = {}) {
+      const taxlotLayer = config.layers.taxlot;
+      const url = buildEnvelopeQueryUrl(layerUrl(config, 'taxlot'), bbox, {
+        outFields: taxlotLayer.idField,
+        resultRecordCount: maxResults + 1,
+        returnGeometry: true,
+      });
+      if (!url) return { parcels: [], saturated: false };
+      const features = await queryFeatures(url);
+      const saturated = features.length > maxResults;
+      const bounded = saturated ? features.slice(0, maxResults) : features;
+      const parcels = [];
+      for (const feature of bounded) {
+        const parcelId = feature.attributes?.[taxlotLayer.idField];
+        const geometry = esriPolygonToGeoJsonGeometry(feature.geometry);
+        if (!parcelId || !geometry) continue;
+        parcels.push({ parcelId: String(parcelId), geometry });
+      }
+      return { parcels, saturated };
     },
 
     getMetadata() {

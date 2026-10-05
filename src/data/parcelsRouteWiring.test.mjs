@@ -13,7 +13,7 @@ const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const code = (rel) => read(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 const source = read('../../vite.config.js');
-const parcelsFn = source.slice(source.indexOf('function parcelsProxy()'), source.indexOf('function openAiRealtimeProxy()'));
+const parcelsFn = source.slice(source.indexOf('function parcelsProxy('), source.indexOf('function openAiRealtimeProxy()'));
 
 test('parcelsProxy is registered in the plugins array', () => {
   assert.match(source, /plugins:\s*\[[\s\S]*?parcelsProxy\(\)/);
@@ -63,6 +63,41 @@ test('each of the four routes has its own rate limiter and checks it before doin
   }
 });
 
+// -- Property Intelligence A2.1: /coverage and /viewport ---------------------------------------------
+
+test('A2.1: /coverage and /viewport each have their own rate limiter too', () => {
+  for (const limiter of ['_coverageLimiter', '_viewportLimiter']) {
+    assert.match(parcelsFn, new RegExp(`${limiter}\\(clientKey\\(req\\)\\)`));
+  }
+});
+
+test('A2.1: /coverage derives its answer from listParcelRegions()/registry config, with no literal region id in its own handler body', () => {
+  const start = installBody.indexOf("urlPath === '/coverage'");
+  const end = installBody.indexOf("const region = incoming.searchParams.get('region')");
+  assert.ok(start > -1 && end > start, 'coverage handler body is boundable');
+  const coverageBody = installBody.slice(start, end);
+  assert.match(coverageBody, /listParcelRegions\(\)/);
+  assert.match(coverageBody, /getParcelProviderConfig\(/);
+  assert.doesNotMatch(coverageBody, /or-deschutes/, 'no hardcoded region id in the coverage handler — registry-driven only');
+});
+
+test('A2.1: /viewport runs AFTER the shared unknown-region gate and the bbox-size cap is a named constant, not a magic number', () => {
+  const regionGateIndex = installBody.indexOf('isKnownParcelRegion(region)');
+  const viewportIndex = installBody.indexOf("urlPath === '/viewport'");
+  assert.ok(regionGateIndex > -1 && viewportIndex > regionGateIndex, '/viewport is gated by the same region check as /identify, /detail, /geometry, /search');
+  assert.match(parcelsFn, /MAX_PARCEL_VIEWPORT_DEGREES/);
+  assert.match(parcelsFn, /MAX_VIEWPORT_PARCELS/);
+});
+
+test('A2.1: the viewport response never carries an owner key, and getParcelsInViewport is the only provider call it makes', () => {
+  const start = installBody.indexOf("urlPath === '/viewport'");
+  const end = installBody.indexOf('sendJson(res, 404, { error: \'Not found.\' });');
+  const viewportBody = installBody.slice(start, end);
+  assert.doesNotMatch(viewportBody, /owner/i);
+  assert.match(viewportBody, /getParcelsInViewport\(/);
+  assert.doesNotMatch(viewportBody, /getParcelById|identifyParcel|searchAddress/, 'viewport never calls a detail/identify/search provider method');
+});
+
 test('every response is JSON built from the normalized parcel/results shape, never the raw upstream payload forwarded verbatim', () => {
   assert.equal(/res\.end\(.*upstream/.test(parcelsFn), false);
   assert.match(parcelsFn, /sendJson\(res, 200, \{ results \}\)/);
@@ -72,7 +107,9 @@ test('every response is JSON built from the normalized parcel/results shape, nev
 // -- privacy hardening: owner is stripped at every public parcel response --------------------------
 
 test('toPublicParcel is imported from the shared data module, not reimplemented in the route file', () => {
-  assert.match(source, /import \{ toPublicParcel \} from '\.\/src\/data\/parcelProviderData\.js';/);
+  const importLine = source.match(/import \{[^}]*\} from '\.\/src\/data\/parcelProviderData\.js';/);
+  assert.ok(importLine, 'parcelProviderData.js import line is present');
+  assert.match(importLine[0], /\btoPublicParcel\b/);
   assert.equal(/function toPublicParcel/.test(parcelsFn), false, 'not redefined locally — one reviewed implementation only');
 });
 
