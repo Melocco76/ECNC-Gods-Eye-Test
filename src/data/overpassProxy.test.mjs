@@ -24,6 +24,7 @@ import {
   overpassProxy,
   readOverpassDisk,
   writeOverpassDisk,
+  OVERPASS_USER_AGENT,
 } from '../../vite.config.js';
 
 test('preflight checks memory, in-flight, then disk before consuming limiter quota', async () => {
@@ -292,6 +293,42 @@ function scriptedFetch(responses) {
   };
   return { fetchImpl, calls };
 }
+
+/** Like scriptedFetch, but records the full (url, opts) pair for header/body assertions. */
+function scriptedFetchCapturingRequests(responses) {
+  const requests = [];
+  let i = 0;
+  const fetchImpl = async (url, opts) => {
+    requests.push({ url: String(url), opts });
+    const r = responses[Math.min(i, responses.length - 1)];
+    i += 1;
+    return typeof r === 'function' ? r(opts) : r;
+  };
+  return { fetchImpl, requests };
+}
+
+test('fetchOverpassPayload: the primary mirror request identifies itself with the expected User-Agent', async () => {
+  const { fetchImpl, requests } = scriptedFetchCapturingRequests([() => jsonResponse(GOOD_BODY)]);
+  await fetchOverpassPayload('data=test', undefined, fetchImpl);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].opts.headers['User-Agent'], OVERPASS_USER_AGENT);
+  assert.equal(requests[0].opts.headers['Content-Type'], 'application/x-www-form-urlencoded', 'query encoding header is unchanged');
+  assert.equal(requests[0].opts.method, 'POST', 'request method is unchanged');
+  assert.equal(requests[0].opts.body, 'data=test', 'query body is forwarded unchanged, byte-for-byte');
+});
+
+test('fetchOverpassPayload: a fallback mirror request carries the SAME User-Agent as the primary', async () => {
+  const { fetchImpl, requests } = scriptedFetchCapturingRequests([
+    () => htmlResponse(406),
+    () => jsonResponse(GOOD_BODY),
+  ]);
+  const payload = await fetchOverpassPayload('data=test', undefined, fetchImpl);
+  assert.equal(requests.length, 2, 'both mirrors were tried');
+  assert.equal(requests[0].opts.headers['User-Agent'], OVERPASS_USER_AGENT);
+  assert.equal(requests[1].opts.headers['User-Agent'], OVERPASS_USER_AGENT, 'the fallback mirror must identify itself the same way as the primary');
+  assert.equal(payload.status, 200);
+  assert.equal(payload.body, GOOD_BODY);
+});
 
 test('fetchOverpassPayload: primary mirror 406 falls through to the secondary mirror', async () => {
   const { fetchImpl, calls } = scriptedFetch([

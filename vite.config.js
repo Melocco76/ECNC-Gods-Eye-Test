@@ -258,6 +258,15 @@ const OVERPASS_TIMEOUT_MS = 22000;
  * existing stale-serve path; this only bounds how long a cache MISS can run.
  */
 const OVERPASS_AGGREGATE_TIMEOUT_MS = 10000;
+/**
+ * Identifying User-Agent for server-side Overpass upstream requests.
+ * Live evidence (Unraid host, 2026-10-05): the SAME query to the SAME
+ * overpass-api.de endpoint returns 406 with no/generic identification but
+ * 200 (~5s) with this exact value — overpass-api.de appears to reject the
+ * proxy's prior request identity specifically, not the request shape.
+ * Server-side only; never sent from the browser.
+ */
+export const OVERPASS_USER_AGENT = 'ECNC-Gods-Eye/1.0';
 /** Max entries in the Overpass response cache (LRU-like, oldest evicted first). */
 const OVERPASS_CACHE_MAX_ENTRIES = 120;
 /** @type {Map<string,{status:number,body:string,contentType:string,endpoint:string,cachedAt:number}>} */
@@ -2917,7 +2926,7 @@ export async function fetchOverpassPayload(
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'gods-eye-view-overpass-proxy/1.0',
+          'User-Agent': OVERPASS_USER_AGENT,
         },
         body,
         signal: controller.signal,
