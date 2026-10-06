@@ -1,9 +1,11 @@
 /**
  * @module parcels
- * @description Property Intelligence A2.2 — the "Property Boundaries" map
- * layer: visible property-parcel outline rendering only. No click selection,
- * no detail panel, no owner data — those are explicitly out of scope here
- * (see A2.3+).
+ * @description Property Intelligence A2.2/A2.3 — the "Property Boundaries"
+ * map layer: visible property-parcel outline rendering (A2.2) plus
+ * click/select/highlight (A2.3). Still no detail panel, no owner data, no
+ * owner search, no `/identify` or `/detail` calls for an ordinary click on
+ * already-rendered geometry — those remain out of scope for a later phase
+ * (A3+).
  *
  * Architecture mirrors `militaryInstallations.js` (the reference
  * implementation this phase was asked to follow): a module-level `state`
@@ -11,20 +13,41 @@
  * viewport fetch, an `AbortController` per request, and the SAME
  * `DataLayerManager` lifecycle contract (`init/enable/disable/update/
  * destroy/getStats`) every other layer already uses — nothing here invents
- * a parallel layer system.
+ * a parallel layer system. Selection reuses the shared
+ * `contextStore.js`/`pickRegistry.js` infrastructure the same way
+ * `militaryInstallations.js` and `flights.js` already do; it is not a new,
+ * property-specific selection channel.
+ *
+ * A2.2 found that the same `parcelId` can legitimately appear on more than
+ * one returned record (not just as multiple parts of one record's own
+ * MultiPolygon) — and a later A2.3 hardening pass found that which of those
+ * records comes first is NOT stable across viewport refreshes either, so a
+ * transient array/record index cannot be part of an entity's identity.
+ * `renderParcels()` instead derives each part's id from its own geometry
+ * (`geometryPartFingerprint` — a deterministic, order-independent hash of its
+ * coordinates). Selection/highlight/persistence logic always keys off the
+ * resulting entity id (`parcelEntityId(parcelId, geometryKey)` — the exact
+ * render/entity identity), never off `parcelId` alone and never off position.
  *
  * Provider discovery is entirely registry-driven through the existing A2.1
  * server contract: this module calls `/api/parcels/coverage` and
  * `/api/parcels/viewport?region=...` using whatever `region` the server
  * hands back. It never hardcodes `or-deschutes` or any other region id.
  *
- * Privacy (A2.2 scope): this module reads only `{parcelId, geometry}` per
- * parcel from the viewport response — the same shape A2.1 already serves
- * with owner data stripped server-side. It never calls `/detail` for a
- * rendered parcel and carries no owner-related code path at all.
+ * Privacy: this module reads only `{parcelId, geometry}` per parcel from the
+ * viewport response — the same shape A2.1 already serves with owner data
+ * stripped server-side. Clicking a rendered parcel selects it from that
+ * already-fetched data only; it never calls `/identify` or `/detail` and
+ * carries no owner-related code path at all.
  */
 import * as Cesium from 'cesium';
 import { governorRequestRender } from '../renderGovernor.js';
+import {
+  clearSelectedEntityContextForLayer,
+  registerEntityContext,
+  removeEntityContextsForLayer,
+  selectEntityContext,
+} from './contextStore.js';
 import { cachedGroundFloor, floorAltitudeM, resolveGroundFloorCellsBounded } from './groundFloor.js';
 import { MAX_PARCEL_VIEWPORT_DEGREES } from './parcelProviderData.js';
 import { registerPickOwner, unregisterPickOwner } from './pickRegistry.js';
@@ -44,6 +67,11 @@ const BOUNDARY_COLOR = '#22c7e8'; // the app's existing cyan accent (style.css -
 const BOUNDARY_OUTLINE_ALPHA = 0.75;
 const BOUNDARY_FILL_ALPHA = 0.05; // nearly transparent — never meant to obscure imagery
 const BOUNDARY_WIDTH = 1.5;
+// Selected-parcel highlight: same accent, pushed to full emphasis in place —
+// never a new/different color, and never a reason to rebuild other parcels.
+const SELECTED_FILL_ALPHA = 0.22;
+const SELECTED_OUTLINE_ALPHA = 1;
+const SELECTED_WIDTH = 3;
 const ENTITY_ID_PREFIX = 'property-parcel';
 
 const state = {
@@ -53,7 +81,7 @@ const state = {
   region: null,
   sourceAgency: null,
   parcels: [],
-  parcelIds: new Set(), // for the pick-ownership predicate only — A2.2 is non-clickable
+  parcelIds: new Set(), // for the pick-ownership predicate (other layers' empty-space checks)
   count: 0,
   saturated: false,
   status: 'idle', // 'idle' | 'unsupported' | 'zoom-in' | 'ready' | 'unavailable'
@@ -64,6 +92,14 @@ const state = {
   generation: 0,
   moveEndRemove: null,
   timer: null,
+  clickHandler: null,
+  // The exact render/entity identity (`parcelEntityId(parcelId, geometryKey)`)
+  // of the selected parcel — never parcelId alone, since duplicate parcelIds
+  // across distinct records are a real, confirmed case (A2.2), and never a
+  // transient array/record index, since the same geometry can legitimately
+  // come back at a different position on a later viewport refresh (A2.3
+  // hardening — see `geometryPartFingerprint`).
+  selectedRenderEntityId: null,
 };
 
 // -- pure helpers (unit-tested without Cesium/network) -----------------------------------------------
@@ -111,15 +147,64 @@ export function normalizeParcelGeometryParts(geometry) {
 }
 
 /**
+ * Decimal places geometry coordinates are rounded to before fingerprinting —
+ * generous enough (~1 cm at the equator) to never merge two genuinely
+ * distinct parcel boundaries, while absorbing any incidental float-formatting
+ * noise a provider might introduce between otherwise-identical responses.
+ */
+const GEOMETRY_FINGERPRINT_PRECISION = 7;
+
+/** Deterministic, dependency-free 32-bit string hash (FNV-1a). No randomness, no UUIDs — the same input always yields the same output. */
+function fnv1aHash(input) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function fingerprintRing(points) {
+  return points.map((p) => `${p.lon.toFixed(GEOMETRY_FINGERPRINT_PRECISION)},${p.lat.toFixed(GEOMETRY_FINGERPRINT_PRECISION)}`).join(';');
+}
+
+/**
+ * A deterministic, geometry-derived key for one rendered parcel part —
+ * depends only on the part's own coordinates, never on its position in the
+ * viewport response array or on any other record. Two parts with the exact
+ * same outer ring + holes (down to `GEOMETRY_FINGERPRINT_PRECISION`) always
+ * fingerprint identically, from any refresh, in any order; two parts with
+ * different coordinates — including two different MultiPolygon parts of the
+ * same record — always fingerprint differently.
+ *
+ * This is what makes selection persistence (`renderParcels`'s
+ * previous-identity restore) survive a reordered viewport response: the
+ * fix for "duplicate parcelId across two records in a different order can
+ * retarget a persisted selection to the wrong geometry."
+ * @param {{outer: Array<{lon:number, lat:number}>, holes: Array<Array<{lon:number, lat:number}>>}} part
+ * @returns {string} An 8-character lowercase hex fingerprint (no colons).
+ */
+export function geometryPartFingerprint(part) {
+  const outer = fingerprintRing(part?.outer || []);
+  const holes = (part?.holes || []).map(fingerprintRing).join('|');
+  return fnv1aHash(`${outer}#${holes}`);
+}
+
+/**
  * Collision-safe Cesium entity id for one rendered parcel part. Namespaced
  * (matches the `gev-trail:`/`installations:`-style convention elsewhere) so
  * a raw parcel id can never collide with another layer's entity id, and
- * parseable back to the parcel id for a future A2.3 click handler.
- * @param {string} parcelId @param {number} partIndex
+ * parseable back to the parcel id by `parcelIdFromEntityId`.
+ *
+ * `geometryKey` is the part's deterministic identity — normally a
+ * `geometryPartFingerprint(part)` result (optionally disambiguated by
+ * `renderParcels` when two parts under the same parcelId are byte-identical
+ * geometry). It is never a transient array/record index.
+ * @param {string} parcelId @param {string} geometryKey
  * @returns {string}
  */
-export function parcelEntityId(parcelId, partIndex = 0) {
-  return `${ENTITY_ID_PREFIX}:${parcelId}:${partIndex}`;
+export function parcelEntityId(parcelId, geometryKey) {
+  return `${ENTITY_ID_PREFIX}:${parcelId}:${geometryKey}`;
 }
 
 /** @param {string} entityId @returns {string|null} the parcel id encoded by `parcelEntityId`, or null if not one of ours. */
@@ -171,6 +256,17 @@ function surfaceHeightM(lat, lon) {
 
 function clearRendered() {
   if (state.dataSource?.entities) state.dataSource.entities.removeAll();
+  // A rebuild discards every Cesium Entity, so any context record pointing
+  // at one is now dangling. `removeEntityContextsForLayer` drops this
+  // layer's records and — if the dropped one was selected — clears the
+  // shared selection and dispatches 'gev:entity-selection-cleared' with
+  // reason 'evicted' on our behalf (contextStore.js). `renderParcels` below
+  // re-selects the matching render/entity identity afterward when it
+  // reappears in the fresh render, so a plain viewport refresh that still
+  // contains the same parcel is a transient evicted->selected pair, not a
+  // real deselection.
+  removeEntityContextsForLayer(LAYER_ID);
+  state.selectedRenderEntityId = null;
 }
 
 function setStatus(status, error = null) {
@@ -180,28 +276,69 @@ function setStatus(status, error = null) {
   governorRequestRender('parcels-status');
 }
 
+/** In-place style mutation for one already-rendered parcel entity — never a `renderParcels()` rebuild just to change a selection. */
+function applyParcelSelectionStyle(entity, selected) {
+  if (!entity?.polygon) return;
+  const boundaryColor = Cesium.Color.fromCssColorString(BOUNDARY_COLOR);
+  entity.polygon.material = boundaryColor.withAlpha(selected ? SELECTED_FILL_ALPHA : BOUNDARY_FILL_ALPHA);
+  entity.polygon.outlineColor = boundaryColor.withAlpha(selected ? SELECTED_OUTLINE_ALPHA : BOUNDARY_OUTLINE_ALPHA);
+  entity.polygon.outlineWidth = selected ? SELECTED_WIDTH : BOUNDARY_WIDTH;
+}
+
+/**
+ * Select one rendered parcel entity: highlight it in place, restore the
+ * previously-selected entity's normal style, and publish it through the
+ * shared context store. `entityId` is the exact render/entity identity
+ * (`parcelEntityId`), never parcelId alone.
+ */
+function selectParcelEntity(entity, entityId) {
+  if (!entity || state.selectedRenderEntityId === entityId) return;
+  const previousId = state.selectedRenderEntityId;
+  if (previousId) {
+    const previousEntity = state.dataSource?.entities?.getById(previousId);
+    applyParcelSelectionStyle(previousEntity, false);
+  }
+  state.selectedRenderEntityId = entityId;
+  applyParcelSelectionStyle(entity, true);
+  selectEntityContext(entity);
+  governorRequestRender('parcels-select');
+}
+
 function renderParcels(parcels) {
   governorRequestRender('parcels-render');
+  const previousSelectedId = state.selectedRenderEntityId;
   clearRendered();
   const boundaryColor = Cesium.Color.fromCssColorString(BOUNDARY_COLOR);
   const fillColor = boundaryColor.withAlpha(BOUNDARY_FILL_ALPHA);
   const outlineColor = boundaryColor.withAlpha(BOUNDARY_OUTLINE_ALPHA);
   // Real Deschutes viewport data proved this necessary (field-tested): the
   // same parcelId can legitimately appear on more than one returned record,
-  // not only as multiple parts of one record's own MultiPolygon geometry — a
-  // per-record `partIndex` alone is not always collision-free. A running
-  // per-parcelId counter across the WHOLE render pass is.
-  const nextPartIndex = new Map();
+  // not only as multiple parts of one record's own MultiPolygon geometry.
+  // A record's position in the response is NOT stable across refreshes (a
+  // later poll can return the same two parcelId-sharing records in swapped
+  // order), so the per-part identity is derived from the part's own geometry
+  // (`geometryPartFingerprint`), never from its index in this loop. Two
+  // genuinely identical geometries under one parcelId (byte-for-byte, the
+  // only case the fingerprint alone can't tell apart) fall back to a
+  // content-driven dedupe counter below — never an array-position one.
+  const usedGeometryKeys = new Set();
   for (const parcel of parcels) {
     const parts = normalizeParcelGeometryParts(parcel.geometry);
     parts.forEach((part) => {
-      const partIndex = nextPartIndex.get(parcel.parcelId) ?? 0;
-      nextPartIndex.set(parcel.parcelId, partIndex + 1);
+      const fingerprint = geometryPartFingerprint(part);
+      let geometryKey = fingerprint;
+      let dedupe = 1;
+      while (usedGeometryKeys.has(`${parcel.parcelId}:${geometryKey}`)) {
+        geometryKey = `${fingerprint}-${dedupe}`;
+        dedupe += 1;
+      }
+      usedGeometryKeys.add(`${parcel.parcelId}:${geometryKey}`);
       const heightM = surfaceHeightM(part.outer[0].lat, part.outer[0].lon);
       const outerPositions = part.outer.map((p) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, heightM));
       const holePositions = part.holes.map((hole) => hole.map((p) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, heightM)));
+      const entityId = parcelEntityId(parcel.parcelId, geometryKey);
       const entity = state.dataSource.entities.add({
-        id: parcelEntityId(parcel.parcelId, partIndex),
+        id: entityId,
         polygon: {
           hierarchy: new Cesium.PolygonHierarchy(outerPositions, holePositions.map((positions) => new Cesium.PolygonHierarchy(positions))),
           material: fillColor,
@@ -211,11 +348,82 @@ function renderParcels(parcels) {
           height: heightM,
         },
       });
-      // Retained for future A2.3 (click selection) — never read for anything
-      // click-related in A2.2 itself, which installs no pick handler.
+      // Retained for the pick-ownership predicate / debugging — click
+      // handling itself resolves identity from the Cesium entity id string.
       entity.gevParcelId = parcel.parcelId;
+      // Identity-only, owner-free metadata — see module docstring. Registered
+      // for every rendered parcel (selected or not), same as
+      // `militaryInstallations.js`, so any of them can be selected.
+      registerEntityContext(entity, {
+        id: entityId,
+        layerId: LAYER_ID,
+        layerName: 'Property Boundaries',
+        source: state.sourceAgency || 'Property boundaries',
+        label: `Parcel ${parcel.parcelId}`,
+        latitude: part.outer[0].lat,
+        longitude: part.outer[0].lon,
+        properties: {
+          parcelId: parcel.parcelId,
+          geometryKey,
+          region: state.region,
+        },
+      });
     });
   }
+  // Restore selection across the rebuild ONLY when the exact same
+  // render/entity identity reappears in this fresh render — never by
+  // parcelId alone (see module docstring). If it does not reappear,
+  // `clearRendered()` above already cleared and dispatched the eviction.
+  if (previousSelectedId) {
+    const restoredEntity = state.dataSource.entities.getById(previousSelectedId);
+    if (restoredEntity) selectParcelEntity(restoredEntity, previousSelectedId);
+  }
+}
+
+/**
+ * Install this layer's own left-click handler, following the same
+ * per-layer `ScreenSpaceEventHandler` convention as `militaryInstallations.js`
+ * and `flights.js` (each layer owns its own handler and reads its own
+ * picks; `pickRegistry.js` is how OTHER layers learn to leave a parcel
+ * pick alone, not how this one finds its own entities).
+ *
+ * Selection comes entirely from the already-rendered viewport dataset: a
+ * plain `scene.pick` plus an id-prefix check, never `/api/parcels/identify`.
+ *
+ * Empty-space clicks are deliberately a no-op here, matching
+ * `militaryInstallations.js`'s existing convention for a plain,
+ * non-tracking, contextStore-backed entity layer: selection persists until
+ * replaced by another parcel selection, evicted by a viewport refresh that
+ * no longer contains it, or the layer is disabled. (`flights.js`'s
+ * empty-space deselection is specific to its aircraft-tracking lane —
+ * tracked-entity/Cockpit semantics that do not apply here — not a
+ * general-purpose convention for a layer like this one.)
+ */
+/** The actual pick-to-selection logic, factored out of the raw Cesium event wiring so it is directly exercisable by `_handleParcelPickForTest`. */
+function handleParcelPick(picked) {
+  if (!state.enabled || !state.dataSource) return;
+  const pickedId = typeof picked?.id?.id === 'string' ? picked.id.id : null;
+  if (!pickedId || parcelIdFromEntityId(pickedId) == null) return;
+  const entity = state.dataSource.entities.getById(pickedId);
+  if (entity) selectParcelEntity(entity, pickedId);
+}
+
+function installInteraction(viewer) {
+  if (state.clickHandler) return;
+  state.clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  state.clickHandler.setInputAction((click) => {
+    handleParcelPick(viewer.scene.pick(click.position));
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+}
+
+/**
+ * Test-only: exercise the exact click-to-selection code path with a fake
+ * Cesium pick result, without needing a real canvas/DOM click simulation —
+ * same `_xForTest` convention as `flights.js`/`militaryInstallations.js`.
+ * @param {{id?: {id?: string}}|null} picked A Cesium `scene.pick()`-shaped result.
+ */
+export function _handleParcelPickForTest(picked) {
+  handleParcelPick(picked);
 }
 
 function scheduleLoad() {
@@ -338,13 +546,15 @@ const propertyParcelsLayer = {
     state.dataSource = new Cesium.CustomDataSource(LAYER_ID);
     viewer.dataSources.add(state.dataSource);
     state.moveEndRemove = viewer.camera.moveEnd.addEventListener(scheduleLoad);
+    installInteraction(viewer);
   },
   enable() {
     state.enabled = true;
-    // Harmless, forward-looking registration only (A2.3 will add real pick
-    // handling): without this, another layer's own click handler can read an
-    // unclaimed parcel polygon as "empty space" and, e.g., wrongly clear a
-    // tracked aircraft. This layer itself installs no click listener.
+    // Lets OTHER layers' own click handlers recognize a parcel pick as
+    // "not empty space" (e.g. so clicking a parcel never wrongly clears a
+    // tracked aircraft). This layer finds its OWN entities directly in its
+    // own click handler (`installInteraction`) — this registration is for
+    // everyone else.
     registerPickOwner(LAYER_ID, (id) => state.parcelIds.has(String(parcelIdFromEntityId(id) ?? id)));
     if (state.dataSource) state.dataSource.show = true;
     // DataLayerManager calls update() immediately after enable(); that owns the first load.
@@ -359,12 +569,16 @@ const propertyParcelsLayer = {
     state.loading = false;
     state.generation += 1; // orphan any in-flight response immediately
     if (state.dataSource) state.dataSource.show = false;
+    clearSelectedEntityContextForLayer(LAYER_ID);
+    state.selectedRenderEntityId = null;
   },
   update() { return loadParcels(); },
   destroy(viewer) {
     this.disable();
     state.moveEndRemove?.();
     state.moveEndRemove = null;
+    state.clickHandler?.destroy();
+    state.clickHandler = null;
     clearRendered();
     if (state.dataSource && viewer) viewer.dataSources.remove(state.dataSource, true);
     state.dataSource = null;

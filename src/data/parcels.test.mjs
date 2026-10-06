@@ -10,17 +10,31 @@ import { test } from 'node:test';
 import * as Cesium from 'cesium';
 import {
   decideViewportFetch,
+  geometryPartFingerprint,
   normalizeParcelGeometryParts,
   parcelEntityId,
   parcelIdFromEntityId,
   ZOOM_GATE_ALTITUDE_M,
+  _handleParcelPickForTest,
 } from './parcels.js';
 import propertyParcelsLayer, { LAYER_ID } from './parcels.js';
 import { isOwnedByOtherLayer } from './pickRegistry.js';
 import { MAX_PARCEL_VIEWPORT_DEGREES } from './parcelProviderData.js';
+import { getSelectedEntityContext } from './contextStore.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const code = (rel) => read(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+// `renderParcels` now registers every rendered entity with the shared
+// contextStore (A2.3), which reaches for a global `window` on every call —
+// even a zero-parcel render — and `init()` now also installs a real Cesium
+// `ScreenSpaceEventHandler`, which reaches for `document`. Both are
+// real-browser-only globals `militaryInstallations.test.mjs` already stubs
+// for its own render/interaction tests. `node --test` isolates each test
+// file in its own process, so one shared stub for this whole file is safe
+// and avoids repeating the same save/restore boilerplate in every test below.
+globalThis.window = new EventTarget();
+globalThis.document ??= { addEventListener() {}, removeEventListener() {} };
 
 // -- 7/8. Polygon / MultiPolygon normalization -----------------------------------------------------
 
@@ -64,14 +78,14 @@ test('a hole with fewer than 3 points is dropped, but the outer ring still rende
 // -- 9. parcel identity retained ------------------------------------------------------------------
 
 test('entity ids are namespaced and collision-safe, and decode back to the exact parcel id', () => {
-  assert.equal(parcelEntityId('1408000000200'), 'property-parcel:1408000000200:0');
-  assert.equal(parcelEntityId('1408000000200', 2), 'property-parcel:1408000000200:2');
-  assert.equal(parcelIdFromEntityId('property-parcel:1408000000200:0'), '1408000000200');
-  assert.equal(parcelIdFromEntityId('property-parcel:181209AC00700:3'), '181209AC00700');
+  assert.equal(parcelEntityId('1408000000200', 'abc12345'), 'property-parcel:1408000000200:abc12345');
+  assert.equal(parcelEntityId('1408000000200', 'def67890'), 'property-parcel:1408000000200:def67890');
+  assert.equal(parcelIdFromEntityId('property-parcel:1408000000200:abc12345'), '1408000000200');
+  assert.equal(parcelIdFromEntityId('property-parcel:181209AC00700:def67890'), '181209AC00700');
 });
 
-test('a parcel id containing a colon still decodes correctly (last colon is the part-index separator)', () => {
-  assert.equal(parcelIdFromEntityId(parcelEntityId('weird:id:with:colons', 1)), 'weird:id:with:colons');
+test('a parcel id containing a colon still decodes correctly (last colon is the geometry-key separator)', () => {
+  assert.equal(parcelIdFromEntityId(parcelEntityId('weird:id:with:colons', 'abc12345')), 'weird:id:with:colons');
 });
 
 test('an id from a different namespace is never mistaken for one of ours', () => {
@@ -79,6 +93,39 @@ test('an id from a different namespace is never mistaken for one of ours', () =>
   assert.equal(parcelIdFromEntityId('acd964'), null);
   assert.equal(parcelIdFromEntityId(''), null);
   assert.equal(parcelIdFromEntityId(null), null);
+});
+
+// -- A2.3 hardening: deterministic, order-independent geometry identity -----------------------------
+
+const PART_A = { outer: [{ lon: -121.5, lat: 44.0 }, { lon: -121.4, lat: 44.0 }, { lon: -121.4, lat: 44.1 }, { lon: -121.5, lat: 44.1 }, { lon: -121.5, lat: 44.0 }], holes: [] };
+const PART_B = { outer: [{ lon: -121.0, lat: 44.0 }, { lon: -120.9, lat: 44.0 }, { lon: -120.9, lat: 44.1 }, { lon: -121.0, lat: 44.1 }, { lon: -121.0, lat: 44.0 }], holes: [] };
+
+test('geometryPartFingerprint is deterministic: the exact same part always fingerprints the same, from a fresh equal object', () => {
+  const again = { outer: PART_A.outer.map((p) => ({ ...p })), holes: [] };
+  assert.equal(geometryPartFingerprint(PART_A), geometryPartFingerprint(again));
+});
+
+test('geometryPartFingerprint distinguishes two different geometries (Polygon case)', () => {
+  assert.notEqual(geometryPartFingerprint(PART_A), geometryPartFingerprint(PART_B));
+});
+
+test('geometryPartFingerprint distinguishes two different parts of one MultiPolygon record', () => {
+  const parts = normalizeParcelGeometryParts({
+    type: 'MultiPolygon',
+    coordinates: [[PART_A.outer.map((p) => [p.lon, p.lat])], [PART_B.outer.map((p) => [p.lon, p.lat])]],
+  });
+  assert.equal(parts.length, 2);
+  const fingerprints = parts.map(geometryPartFingerprint);
+  assert.notEqual(fingerprints[0], fingerprints[1], 'each MultiPolygon part remains independently distinguishable');
+});
+
+test('geometryPartFingerprint never produces a colon (would break parcelIdFromEntityId\'s last-colon split)', () => {
+  assert.equal(geometryPartFingerprint(PART_A).includes(':'), false);
+});
+
+test('geometryPartFingerprint depends only on coordinates, not on holes being absent vs. an empty array', () => {
+  const withExplicitEmptyHoles = { outer: PART_A.outer, holes: [] };
+  assert.equal(geometryPartFingerprint(PART_A), geometryPartFingerprint(withExplicitEmptyHoles));
 });
 
 // -- 3/4/6. zoom gate, coverage gate, oversized-bbox refusal ----------------------------------------
@@ -132,7 +179,11 @@ function fakeViewer({ heightM = 1000 } = {}) {
         };
       },
     },
-    scene: { globe: { ellipsoid: Cesium.Ellipsoid.WGS84 } },
+    scene: {
+      globe: { ellipsoid: Cesium.Ellipsoid.WGS84 },
+      canvas: { addEventListener() {}, removeEventListener() {} },
+      pick() { return null; },
+    },
     dataSources: {
       add(dataSource) { dataSources.push(dataSource); return dataSource; },
       remove(dataSource) { const i = dataSources.indexOf(dataSource); if (i >= 0) dataSources.splice(i, 1); return i >= 0; },
@@ -169,7 +220,7 @@ test('regression: two SEPARATE records sharing one parcelId (real Deschutes data
     [/\/api\/parcels\/viewport/, okJson({
       parcels: [
         { parcelId: '181208AACANAL', geometry: samePolygon },
-        { parcelId: '181208AACANAL', geometry: samePolygon }, // same id, a second record
+        { parcelId: '181208AACANAL', geometry: samePolygon }, // same id, a second record, byte-identical geometry
       ],
       count: 2, saturated: false,
     })],
@@ -178,7 +229,9 @@ test('regression: two SEPARATE records sharing one parcelId (real Deschutes data
     propertyParcelsLayer.enable();
     await assert.doesNotReject(propertyParcelsLayer.update());
     const ids = viewer.__dataSources[0].entities.values.map((e) => e.id);
-    assert.deepEqual(ids, ['property-parcel:181208AACANAL:0', 'property-parcel:181208AACANAL:1']);
+    assert.equal(ids.length, 2);
+    assert.notEqual(ids[0], ids[1], 'byte-identical geometry under one parcelId still gets two distinct entity ids (content-driven dedupe, not array position)');
+    assert.ok(ids.every((id) => id.startsWith('property-parcel:181208AACANAL:')));
     assert.equal(propertyParcelsLayer.getStats().status, 'ready', 'no collision error surfaced as a failure');
     propertyParcelsLayer.destroy(viewer);
   });
@@ -205,7 +258,8 @@ test('1/4. a supported, close-enough view calls /coverage then /viewport, and re
     assert.equal(stats.count, 1);
     assert.equal(stats.source, "Deschutes County Assessor's Office", 'attribution comes from the coverage response, not hardcoded');
     assert.equal(viewer.__dataSources[0].entities.values.length, 1);
-    assert.equal(viewer.__dataSources[0].entities.values[0].id, 'property-parcel:1408000000200:0');
+    const [expectedPart] = normalizeParcelGeometryParts({ type: 'Polygon', coordinates: [[[-121.74, 44.0], [-121.70, 44.0], [-121.70, 44.03], [-121.74, 44.03], [-121.74, 44.0]]] });
+    assert.equal(viewer.__dataSources[0].entities.values[0].id, `property-parcel:1408000000200:${geometryPartFingerprint(expectedPart)}`);
     assert.ok(calls.some((u) => u.includes('/api/parcels/coverage')));
     assert.ok(calls.some((u) => u.includes('/api/parcels/viewport')));
     propertyParcelsLayer.destroy(viewer);
@@ -304,7 +358,8 @@ test('11. a superseded (stale-generation) response never overwrites newer state'
     resolveSlowViewport(); // only now let the stale (first) response finish, late
     await first;
     const ids = viewer.__dataSources[0].entities.values.map((e) => e.id);
-    assert.deepEqual(ids, ['property-parcel:FRESH:0'], 'the late stale response never overwrote the fresh render');
+    const [freshPart] = normalizeParcelGeometryParts({ type: 'Polygon', coordinates: [[[-121.74, 44.0], [-121.70, 44.0], [-121.70, 44.03], [-121.74, 44.0]]] });
+    assert.deepEqual(ids, [`property-parcel:FRESH:${geometryPartFingerprint(freshPart)}`], 'the late stale response never overwrote the fresh render');
     propertyParcelsLayer.destroy(viewer);
   });
 });
@@ -366,7 +421,7 @@ test('disable() hides the layer without destroying its entities (matches the mil
   });
 });
 
-test('a harmless pick-owner registration exists for A2.3, but A2.2 installs no click handler of its own', async () => {
+test('the pick-owner registration lets another layer recognize a parcel pick as claimed, not empty space', async () => {
   const viewer = fakeViewer({ heightM: 1000 });
   await withMockedFetch([
     [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
@@ -375,14 +430,12 @@ test('a harmless pick-owner registration exists for A2.3, but A2.2 installs no c
     propertyParcelsLayer.init(viewer);
     propertyParcelsLayer.enable();
     await propertyParcelsLayer.update();
-    assert.equal(isOwnedByOtherLayer('some-other-layer', 'property-parcel:A1:0'), true, 'another layer\'s click handler must recognize this as claimed, not empty space');
+    assert.equal(isOwnedByOtherLayer('some-other-layer', squareEntityId('A1')), true, 'another layer\'s click handler must recognize this as claimed, not empty space');
     assert.equal(isOwnedByOtherLayer('some-other-layer', 'something-unrelated'), false);
     propertyParcelsLayer.disable();
-    assert.equal(isOwnedByOtherLayer('some-other-layer', 'property-parcel:A1:0'), false, 'ownership is released on disable');
+    assert.equal(isOwnedByOtherLayer('some-other-layer', squareEntityId('A1')), false, 'ownership is released on disable');
     propertyParcelsLayer.destroy(viewer);
   });
-  const source = code('./parcels.js');
-  assert.equal(/ScreenSpaceEventHandler|LEFT_CLICK/.test(source), false, 'A2.2 installs no click handler of its own');
 });
 
 // -- 14/15. privacy: no full-detail/owner calls, no hardcoded region ---------------------------------
@@ -441,4 +494,358 @@ test('the viewport request always asks for the current camera rectangle, never a
   const source = code('./parcels.js');
   assert.equal(/south=0|west=0|north=90|east=180/.test(source), false);
   assert.match(source, /computeViewRectangle/);
+});
+
+// -- A2.3: parcel click / select / highlight ---------------------------------------------------------
+
+async function withWindow(run) {
+  const realWindow = globalThis.window;
+  const host = new EventTarget();
+  globalThis.window = host;
+  try {
+    // `run` is async: without this `await`, `finally` below would restore
+    // `window` as soon as `run(host)` returns its pending promise, long
+    // before the test's later `await`s (and any event it dispatches) ever
+    // run — silently swapping `window` out from under a listener attached
+    // to `host`.
+    return await run(host);
+  } finally {
+    globalThis.window = realWindow;
+  }
+}
+
+const SQUARE = { type: 'Polygon', coordinates: [[[-121.74, 44.0], [-121.70, 44.0], [-121.70, 44.03], [-121.74, 44.03], [-121.74, 44.0]]] };
+// The deterministic geometry key every SQUARE-shaped parcel below renders
+// under, regardless of its parcelId — entity ids are built from it instead
+// of a hardcoded array-position suffix (A2.3 hardening).
+const SQUARE_KEY = geometryPartFingerprint(normalizeParcelGeometryParts(SQUARE)[0]);
+const squareEntityId = (parcelId) => parcelEntityId(parcelId, SQUARE_KEY);
+
+test('A2.3/1: clicking an already-rendered parcel selects it — highlighted in place and published to the shared context store', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      const entity = viewer.__dataSources[0].entities.getById(squareEntityId('A1'));
+      assert.equal(entity.polygon.outlineWidth.getValue(), 1.5, 'normal style before selection');
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      assert.ok(entity.polygon.outlineWidth.getValue() > 1.5, 'highlighted in place after selection');
+      const selected = getSelectedEntityContext();
+      assert.equal(selected?.id, squareEntityId('A1'));
+      assert.equal(selected?.layerId, LAYER_ID);
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/2: selecting a parcel never calls /api/parcels/identify or /api/parcels/detail — selection comes entirely from the rendered dataset', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  let identifyCalled = false;
+  let detailCalled = false;
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/identify/, async () => { identifyCalled = true; return okJson({})(); }],
+      [/\/api\/parcels\/detail/, async () => { detailCalled = true; return okJson({})(); }],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      assert.equal(identifyCalled, false);
+      assert.equal(detailCalled, false);
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/3: selecting a new parcel restores the previously-selected one to its normal (unhighlighted) style', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }, { parcelId: 'A2', geometry: SQUARE }], count: 2, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      const entities = viewer.__dataSources[0].entities;
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      assert.ok(entities.getById(squareEntityId('A1')).polygon.outlineWidth.getValue() > 1.5);
+      _handleParcelPickForTest({ id: { id: squareEntityId('A2') } });
+      assert.equal(entities.getById(squareEntityId('A1')).polygon.outlineWidth.getValue(), 1.5, 'A1 restored to normal style');
+      assert.ok(entities.getById(squareEntityId('A2')).polygon.outlineWidth.getValue() > 1.5, 'A2 now highlighted');
+      assert.equal(getSelectedEntityContext()?.id, squareEntityId('A2'));
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/4: duplicate parcelId across two distinct records — selecting one never selects or highlights the other', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({
+        // Byte-identical geometry twice under one parcelId — the fingerprint
+        // alone can't tell these apart, so this exercises the content-driven
+        // dedupe suffix rather than the (reordering) distinct-geometry case,
+        // which "two distinct records, different geometries, reordered"
+        // below covers.
+        parcels: [{ parcelId: 'DUP', geometry: SQUARE }, { parcelId: 'DUP', geometry: SQUARE }],
+        count: 2, saturated: false,
+      })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      const entities = viewer.__dataSources[0].entities;
+      const ids = entities.values.map((e) => e.id);
+      assert.equal(ids.length, 2);
+      const [firstId, secondId] = ids;
+      _handleParcelPickForTest({ id: { id: firstId } });
+      assert.ok(entities.getById(firstId).polygon.outlineWidth.getValue() > 1.5);
+      assert.equal(entities.getById(secondId).polygon.outlineWidth.getValue(), 1.5, 'the OTHER record with the same parcelId is untouched');
+      assert.equal(getSelectedEntityContext()?.id, firstId);
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3 hardening: a persisted selection survives duplicate-parcelId records swapping order between refreshes', async () => {
+  // The fix under test: two SEPARATE records share one parcelId but have
+  // DIFFERENT geometries. Refresh 1 returns them [A, B]; refresh 2 returns
+  // the exact same two records reordered [B, A]. A persisted selection on
+  // physical geometry B must stay on geometry B — never silently retarget
+  // to whichever record now happens to sit at B's old array position.
+  const viewer = fakeViewer({ heightM: 1000 });
+  const GEOM_A = SQUARE;
+  const GEOM_B = { type: 'Polygon', coordinates: [[[-121.9, 44.5], [-121.85, 44.5], [-121.85, 44.55], [-121.9, 44.55], [-121.9, 44.5]]] };
+  const recordA = { parcelId: 'REORDER', geometry: GEOM_A };
+  const recordB = { parcelId: 'REORDER', geometry: GEOM_B };
+  const idForGeom = (geom) => parcelEntityId('REORDER', geometryPartFingerprint(normalizeParcelGeometryParts(geom)[0]));
+  const idA = idForGeom(GEOM_A);
+  const idB = idForGeom(GEOM_B);
+  assert.notEqual(idA, idB, 'sanity: the two distinct geometries really do get distinct ids');
+  let round = 0;
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, async () => {
+        round += 1;
+        const parcels = round === 1 ? [recordA, recordB] : [recordB, recordA]; // same two records, swapped order
+        return okJson({ parcels, count: 2, saturated: false })();
+      }],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update(); // round 1: order [A, B]
+      const entities = viewer.__dataSources[0].entities;
+      assert.deepEqual(entities.values.map((e) => e.id).sort(), [idA, idB].sort());
+      _handleParcelPickForTest({ id: { id: idB } }); // select physical geometry B
+      assert.equal(getSelectedEntityContext()?.id, idB);
+      await propertyParcelsLayer.update(); // round 2: SAME records, order [B, A]
+      assert.equal(getSelectedEntityContext()?.id, idB, 'selection stayed on physical geometry B, not on whatever record now occupies its old array index');
+      assert.ok(entities.getById(idB).polygon.outlineWidth.getValue() > 1.5, 'geometry B is the one actually highlighted');
+      assert.equal(entities.getById(idA).polygon.outlineWidth.getValue(), 1.5, 'geometry A — now first in the array — is NOT wrongly highlighted');
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/5: a viewport refresh that still contains the selected parcel (same render/entity identity) restores its selection and highlight', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      assert.equal(getSelectedEntityContext()?.id, squareEntityId('A1'));
+      await propertyParcelsLayer.update(); // same camera view -> same coverage/viewport response, rebuilt entities
+      const entities = viewer.__dataSources[0].entities;
+      assert.equal(getSelectedEntityContext()?.id, squareEntityId('A1'), 'selection survived the rebuild');
+      assert.ok(entities.getById(squareEntityId('A1')).polygon.outlineWidth.getValue() > 1.5, 'the NEW entity for the same identity is highlighted');
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/6: a viewport refresh that no longer contains the selected parcel clears the selection and dispatches an evicted event', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  let clearedDetail = null;
+  let round = 0;
+  await withWindow(async (host) => {
+    host.addEventListener('gev:entity-selection-cleared', (event) => { clearedDetail = event.detail; });
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, async () => {
+        round += 1;
+        return okJson(round === 1
+          ? { parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false }
+          : { parcels: [{ parcelId: 'B2', geometry: SQUARE }], count: 1, saturated: false })();
+      }],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update(); // round 1: renders A1
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      assert.equal(getSelectedEntityContext()?.id, squareEntityId('A1'));
+      await propertyParcelsLayer.update(); // round 2: A1 is gone from the viewport, B2 renders instead
+      assert.equal(getSelectedEntityContext(), null, 'selection cleared — the parcel is gone from the new viewport');
+      assert.deepEqual(clearedDetail, { layerId: LAYER_ID, reason: 'evicted' });
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/7: an empty-space click (no pick, or a pick belonging to another layer) is a no-op — it never deselects', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      assert.equal(getSelectedEntityContext()?.id, squareEntityId('A1'));
+      assert.doesNotThrow(() => _handleParcelPickForTest(null));
+      assert.doesNotThrow(() => _handleParcelPickForTest({ id: { id: 'flights:n12345' } }));
+      assert.equal(getSelectedEntityContext()?.id, squareEntityId('A1'), 'selection untouched by an unrelated or empty-space click');
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/8: disabling the layer clears the shared selection for this layer', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      assert.equal(getSelectedEntityContext()?.id, squareEntityId('A1'));
+      propertyParcelsLayer.disable();
+      assert.equal(getSelectedEntityContext(), null, 'selection cleared on disable');
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/9: destroy() leaves no dangling selection, context record, or click handler', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      propertyParcelsLayer.destroy(viewer);
+      assert.equal(getSelectedEntityContext(), null);
+      // Re-init/enable after destroy must not throw and must install a fresh handler cleanly.
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      assert.doesNotThrow(() => _handleParcelPickForTest({ id: { id: squareEntityId('A1') } }), 'no stale dataSource reference after destroy/re-init');
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/10: the registered selection metadata carries only identity/location fields — no owner data', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      const selected = getSelectedEntityContext();
+      assert.deepEqual(Object.keys(selected.properties).sort(), ['geometryKey', 'parcelId', 'region']);
+      // `selected.entity` is the live (circular) Cesium Entity — compare only the plain, serializable fields.
+      const { entity, ...plainFields } = selected;
+      assert.equal(JSON.stringify(plainFields).toLowerCase().includes('owner'), false);
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/11: a pick for an id outside this layer\'s namespace is ignored, even if a same-named dataSource entity does not exist', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      assert.doesNotThrow(() => _handleParcelPickForTest({ id: { id: 'property-parcel:does-not-exist:7' } }));
+      assert.equal(getSelectedEntityContext(), null);
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/12: a click received while the layer is disabled is ignored', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      propertyParcelsLayer.disable();
+      assert.doesNotThrow(() => _handleParcelPickForTest({ id: { id: squareEntityId('A1') } }));
+      assert.equal(getSelectedEntityContext(), null);
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/13: selecting the same already-selected parcel again is a harmless no-op (no redundant re-highlight work)', async () => {
+  const viewer = fakeViewer({ heightM: 1000 });
+  await withWindow(async () => {
+    await withMockedFetch([
+      [/\/api\/parcels\/coverage/, okJson({ region: 'or-deschutes', sourceAgency: 'X' })],
+      [/\/api\/parcels\/viewport/, okJson({ parcels: [{ parcelId: 'A1', geometry: SQUARE }], count: 1, saturated: false })],
+    ], async () => {
+      propertyParcelsLayer.init(viewer);
+      propertyParcelsLayer.enable();
+      await propertyParcelsLayer.update();
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      let selectedCount = 0;
+      window.addEventListener('gev:entity-selected', () => { selectedCount += 1; });
+      _handleParcelPickForTest({ id: { id: squareEntityId('A1') } });
+      assert.equal(selectedCount, 0, 'reselecting the same entity does not re-dispatch selection');
+      propertyParcelsLayer.destroy(viewer);
+    });
+  });
+});
+
+test('A2.3/source: no /api/parcels/identify call exists anywhere in this module', () => {
+  const source = code('./parcels.js');
+  assert.equal(/\/api\/parcels\/identify/.test(source), false);
 });
