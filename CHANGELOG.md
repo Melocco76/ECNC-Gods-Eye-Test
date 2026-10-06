@@ -54,6 +54,22 @@ product-generation change).
   existing About dialog, reading from `package.json` via one shared version
   module so a future in-app Help/About screen can reuse the same source
   without a second hardcoded version string.
+- A "What's New" release-history dialog, opened from the About dialog,
+  reading its current-version badge from that same shared version module and
+  its release notes from a structured history module kept in sync with this
+  file (`src/data/releaseHistory.js`).
+
+### Fixed
+
+- A rendering crash in the new Property Boundaries layer when the same
+  parcel id legitimately appeared on more than one record within a single
+  viewport response (not only as multiple parts of one record's own
+  MultiPolygon geometry) — found during live verification against the real
+  Deschutes County service.
+- Zoning enrichment for Property Intelligence silently failing because the
+  county's zoning GIS service (an older ArcGIS Server instance) rejected the
+  `resultRecordCount` query parameter outright — found during live
+  verification; the zoning lookup no longer sends it.
 
 ## [0.1.1] — 2026-09-01 — Installation and live-data fixes
 

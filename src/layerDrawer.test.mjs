@@ -123,8 +123,8 @@ test('the map weather card out-stacks the Layers drawer its own toggle lives ins
 });
 
 test('chrome hides in clean view, recording and cockpit; Escape and reduced motion are handled', () => {
-  assert.match(css, /body\.ui-clean-view :is\(#app-header, #layer-drawer, #about-dialog\)/);
-  assert.match(css, /body\.cockpit-mode :is\(#app-header, #layer-drawer, #about-dialog\)/);
+  assert.match(css, /body\.ui-clean-view :is\(#app-header, #layer-drawer, #about-dialog, #whats-new-dialog\)/);
+  assert.match(css, /body\.cockpit-mode :is\(#app-header, #layer-drawer, #about-dialog, #whats-new-dialog\)/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{ #layer-drawer \{ transition: none; transform: none; \} \}/);
   assert.match(css, /\.app-header-btn\[aria-expanded='true'\]/);
   const ui = read('./ui.js');
@@ -527,6 +527,17 @@ function makeAppDom() {
   about.hidden = true;
   make('about-btn', 'button');
   make('about-dialog-close', 'button');
+  const aboutWhatsNewBtn = make('about-whats-new-btn', 'button');
+  aboutWhatsNewBtn.focus = () => { doc.activeElement = aboutWhatsNewBtn; };
+  const whatsNew = make('whats-new-dialog', 'aside');
+  whatsNew.hidden = true;
+  const whatsNewClose = make('whats-new-dialog-close', 'button');
+  whatsNewClose.focus = () => { doc.activeElement = whatsNewClose; };
+  make('whats-new-version-badge', 'span');
+  make('whats-new-dialog-meta', 'p');
+  const whatsNewList = make('whats-new-list', 'div');
+  make('whats-new-expand-all', 'button');
+  make('whats-new-collapse-all', 'button');
   make('app-header-map-mode', 'span').textContent = 'Map';
   make('app-header-altitude', 'span');
   make('app-header-clock-value', 'span');
@@ -551,7 +562,10 @@ function makeAppDom() {
     addEventListener() {},
     removeEventListener() {},
   };
-  return { doc, win, drawer, layersBtn, lookBtn, closeBtn, about, lookToggle };
+  return {
+    doc, win, drawer, layersBtn, lookBtn, closeBtn, about, lookToggle,
+    aboutWhatsNewBtn, whatsNew, whatsNewClose, whatsNewList,
+  };
 }
 
 const fire = (doc, target, type, event = {}) => {
@@ -641,4 +655,130 @@ test('public users cannot alter AIS coverage: the row has no interactive region 
     assert.equal(/(local|session)Storage[^\n]*(admin|token)|cookie[^\n]*(admin|token)/i.test(source), false, `${file}: no credential storage`);
   }
   assert.equal(/\?[^"'\s]*(token|admin)=/i.test(read('./data/aisCoverageStatus.js')), false, 'no credential in a query string');
+});
+
+// -- What's New (release history) ------------------------------------------------------------
+
+test("the About dialog carries a What's New trigger near the version line, and its original attribution is unchanged", () => {
+  const about = html.slice(html.indexOf('id="about-dialog"'), html.indexOf('</aside>', html.indexOf('id="about-dialog"')));
+  assert.match(about, /id="about-whats-new-btn"[^>]*aria-haspopup="dialog"[^>]*aria-controls="whats-new-dialog"/s);
+  assert.ok(about.indexOf('about-version') < about.indexOf('about-whats-new-btn'), 'placed near the version line');
+  // Pre-existing attribution text, verbatim and unmoved.
+  assert.match(about, /ECNC God's Eye &mdash; technology demonstration based on God's Eye View by Bilawal Sidhu\./);
+  assert.match(about, /Tech is Secondary; People are Primary\./);
+  assert.match(about, /Released under the MIT License\. Upstream project: God's Eye View by Bilawal Sidhu \(Halfpixel\)\./);
+});
+
+test("the What's New dialog has proper dialog semantics, a focusable close button, and a footer crediting the changelog", () => {
+  const dialog = html.slice(html.indexOf('id="whats-new-dialog"'), html.indexOf('</aside>', html.indexOf('id="whats-new-dialog"')));
+  assert.match(dialog, /role="dialog"/);
+  assert.match(dialog, /aria-labelledby="whats-new-dialog-title"/);
+  assert.match(dialog, /<h2 id="whats-new-dialog-title">What's New in ECNC God's Eye<\/h2>/);
+  assert.match(dialog, /id="whats-new-dialog-close"[^>]*aria-label="Close what's new"/s);
+  assert.match(dialog, /Sourced from the official ECNC God's Eye changelog\./);
+  assert.match(dialog, /id="whats-new-expand-all"/);
+  assert.match(dialog, /id="whats-new-collapse-all"/);
+});
+
+test("What's New opens from the About dialog (which stays open behind it), closes via its own button, and returns focus to the trigger", () => {
+  const { doc, win, about, aboutWhatsNewBtn, whatsNew, whatsNewClose } = makeAppDom();
+  initLayerDrawer({ viewer: null, doc, win });
+  about.hidden = false; // About is already open, as the real flow requires
+  fire(doc, aboutWhatsNewBtn, 'click');
+  assert.equal(whatsNew.hidden, false, "What's New opened");
+  assert.equal(about.hidden, false, 'About stays open behind it');
+  assert.equal(aboutWhatsNewBtn.getAttribute('aria-expanded'), 'true');
+  assert.equal(doc.activeElement, whatsNewClose, 'focus moved to the close button');
+
+  fire(doc, whatsNewClose, 'click');
+  assert.equal(whatsNew.hidden, true);
+  assert.equal(aboutWhatsNewBtn.getAttribute('aria-expanded'), 'false');
+  assert.equal(doc.activeElement, aboutWhatsNewBtn, 'focus returned to the trigger');
+});
+
+test("Escape closes What's New first when both it and About are open (topmost surface only)", () => {
+  const { doc, win, about, aboutWhatsNewBtn, whatsNew } = makeAppDom();
+  initLayerDrawer({ viewer: null, doc, win });
+  about.hidden = false;
+  fire(doc, aboutWhatsNewBtn, 'click');
+  assert.equal(whatsNew.hidden, false);
+
+  fire(doc, doc, 'keydown', { key: 'Escape', target: doc });
+  assert.equal(whatsNew.hidden, true, "first Escape closes What's New only");
+  assert.equal(about.hidden, false, 'About is untouched by that Escape');
+
+  fire(doc, doc, 'keydown', { key: 'Escape', target: doc });
+  assert.equal(about.hidden, true, 'second Escape closes About');
+});
+
+test('the release list renders with the newest release expanded by default and the rest collapsed, carrying real content', async () => {
+  const { doc, win, aboutWhatsNewBtn, whatsNewList } = makeAppDom();
+  initLayerDrawer({ viewer: null, doc, win });
+  fire(doc, aboutWhatsNewBtn, 'click');
+  await new Promise((resolve) => setImmediate(resolve)); // let the dynamic import settle
+
+  const { RELEASES } = await import('./data/releaseHistory.js');
+  const cards = whatsNewList.querySelectorAll('.whats-new-release');
+  assert.equal(cards.length, RELEASES.length);
+
+  const firstToggle = cards[0].querySelector('.whats-new-release-toggle');
+  const firstBody = cards[0].querySelector('.whats-new-release-body');
+  assert.equal(firstToggle.getAttribute('aria-expanded'), 'true', 'newest release starts expanded');
+  assert.equal(firstBody.hidden, false);
+
+  if (cards.length > 1) {
+    const secondToggle = cards[1].querySelector('.whats-new-release-toggle');
+    const secondBody = cards[1].querySelector('.whats-new-release-body');
+    assert.equal(secondToggle.getAttribute('aria-expanded'), 'false', 'older releases start collapsed');
+    assert.equal(secondBody.hidden, true);
+  }
+
+  // Real content, not placeholders: at least one list item of real release-note text.
+  const items = firstBody.querySelectorAll('li');
+  assert.ok(items.length > 0);
+  assert.ok(items[0].textContent.length > 10);
+});
+
+test('the Latest Release badge marks exactly the newest release, and the version/date come from the structured release data', async () => {
+  const { doc, win, aboutWhatsNewBtn, whatsNewList } = makeAppDom();
+  initLayerDrawer({ viewer: null, doc, win });
+  fire(doc, aboutWhatsNewBtn, 'click');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const { RELEASES, getLatestRelease } = await import('./data/releaseHistory.js');
+  const latest = getLatestRelease();
+  const versionBadge = doc.getElementById('whats-new-version-badge');
+  const meta = doc.getElementById('whats-new-dialog-meta');
+  assert.equal(versionBadge.textContent, `v${latest.version}`);
+  assert.match(meta.textContent, new RegExp(`v${latest.version}`));
+  assert.match(meta.textContent, new RegExp(latest.date));
+
+  const cards = whatsNewList.querySelectorAll('.whats-new-release');
+  const latestBadgeCounts = cards.map((card) => card.querySelectorAll('.whats-new-badge-latest').length);
+  assert.equal(latestBadgeCounts[0], 1, 'the newest card carries the Latest Release badge');
+  assert.ok(latestBadgeCounts.slice(1).every((n) => n === 0), 'no older card carries it');
+  assert.equal(RELEASES.filter((r) => r.isLatest).length, 1);
+  assert.equal(RELEASES[0].isLatest, true);
+});
+
+test("toggling a release card flips its own expanded state only; Expand all / Collapse all affect every card", async () => {
+  const { doc, win, aboutWhatsNewBtn, whatsNewList } = makeAppDom();
+  initLayerDrawer({ viewer: null, doc, win });
+  fire(doc, aboutWhatsNewBtn, 'click');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const firstToggle = whatsNewList.querySelectorAll('.whats-new-release-toggle')[0];
+  fire(doc, firstToggle, 'click');
+  assert.equal(firstToggle.getAttribute('aria-expanded'), 'false', 'clicking an expanded card collapses it');
+  fire(doc, firstToggle, 'click');
+  assert.equal(firstToggle.getAttribute('aria-expanded'), 'true');
+
+  fire(doc, doc.getElementById('whats-new-collapse-all'), 'click');
+  for (const toggle of whatsNewList.querySelectorAll('.whats-new-release-toggle')) {
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  }
+  fire(doc, doc.getElementById('whats-new-expand-all'), 'click');
+  for (const toggle of whatsNewList.querySelectorAll('.whats-new-release-toggle')) {
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  }
 });

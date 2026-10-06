@@ -233,11 +233,35 @@
     </header>
     <div class="about-body">
       <p id="about-version" class="about-version"></p>
+      <button type="button" id="about-whats-new-btn" class="about-whats-new-btn" aria-haspopup="dialog" aria-controls="whats-new-dialog">
+        <span class="material-symbols-outlined" aria-hidden="true">new_releases</span> What's New
+      </button>
       <p class="about-credit">ECNC God's Eye &mdash; technology demonstration based on God's Eye View by Bilawal Sidhu.</p>
       <p>Tech is Secondary; People are Primary.</p>
       <p>Released under the MIT License. Upstream project: God's Eye View by Bilawal Sidhu (Halfpixel).</p>
       <h3>Data and imagery credits</h3>
       <ul id="about-credits-list"></ul>
+    </div>
+  </aside>
+
+  <!-- What's New: release history, opened from the About dialog. Release cards are
+       populated from src/data/releaseHistory.js the first time this opens. -->
+  <aside id="whats-new-dialog" role="dialog" aria-labelledby="whats-new-dialog-title" aria-describedby="whats-new-dialog-meta" hidden>
+    <header class="drawer-head">
+      <div class="whats-new-title-row">
+        <h2 id="whats-new-dialog-title">What's New in ECNC God's Eye</h2>
+        <span id="whats-new-version-badge" class="whats-new-badge whats-new-version-badge"></span>
+      </div>
+      <button type="button" id="whats-new-dialog-close" class="drawer-close" aria-label="Close what's new"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+    </header>
+    <div class="whats-new-body">
+      <p id="whats-new-dialog-meta" class="whats-new-meta"></p>
+      <div class="whats-new-controls">
+        <button type="button" id="whats-new-expand-all" class="whats-new-control-btn">Expand all</button>
+        <button type="button" id="whats-new-collapse-all" class="whats-new-control-btn">Collapse all</button>
+      </div>
+      <div id="whats-new-list" class="whats-new-list"></div>
+      <footer class="whats-new-footer">Sourced from the official ECNC God's Eye changelog.</footer>
     </div>
   </aside>
   <aside id="map-weather-card" aria-label="Local weather at the view centre" data-status="unavailable" hidden>

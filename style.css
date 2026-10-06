@@ -10224,11 +10224,62 @@ summary:focus-visible {
 #about-credits-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); }
 #about-credits-list li { margin-bottom: 4px; }
 #about-credits-list a { color: var(--accent); }
+.about-whats-new-btn {
+  display: inline-flex; align-items: center; gap: 6px; margin: 0 0 12px; padding: 6px 10px;
+  border: 1px solid var(--glass-border); border-radius: 8px; background: rgba(255, 255, 255, 0.04);
+  color: var(--accent); font: 500 12px/1 var(--font-sans); cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.about-whats-new-btn:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--accent); }
+.about-whats-new-btn .material-symbols-outlined { font-size: 16px; }
+
+/* What's New (release history) — same glass-panel language as #about-dialog, slightly wider for release content. */
+#whats-new-dialog {
+  position: fixed; top: 72px; left: 50%; z-index: 145; width: min(620px, calc(100vw - 24px));
+  max-height: calc(100vh - 72px - 80px); overflow-y: auto; transform: translateX(-50%);
+  border: 1px solid var(--glass-border); border-radius: 12px; background: var(--glass-bg);
+  box-shadow: var(--panel-shadow); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  color: var(--text-primary);
+}
+.whats-new-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.whats-new-title-row h2 { min-width: 0; overflow-wrap: break-word; }
+.whats-new-body { padding: 10px 16px 16px; font-size: 14px; line-height: 1.5; }
+.whats-new-meta { margin: 0 0 10px; font: 500 12px/1.3 var(--font-mono, monospace); color: var(--text-secondary); }
+.whats-new-controls { display: flex; gap: 8px; margin: 0 0 10px; }
+.whats-new-control-btn {
+  padding: 5px 10px; border: 1px solid var(--glass-border); border-radius: 999px; background: transparent;
+  color: var(--text-secondary); font: 500 11px/1 var(--font-sans); cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.whats-new-control-btn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text-primary); }
+.whats-new-list { display: flex; flex-direction: column; gap: 8px; }
+.whats-new-badge {
+  flex-shrink: 0; border: 1px solid rgba(0, 212, 255, 0.32); border-radius: 999px; background: rgba(0, 212, 255, 0.09);
+  color: #9defff; font: 500 10px/1 var(--font-mono, monospace); letter-spacing: 0.3px; padding: 3px 8px; text-transform: uppercase;
+}
+.whats-new-badge-latest { border-color: rgba(34, 199, 232, 0.5); background: rgba(34, 199, 232, 0.16); color: var(--accent); }
+.whats-new-release { border: 1px solid var(--glass-border); border-radius: 10px; overflow: hidden; background: rgba(255, 255, 255, 0.02); }
+.whats-new-release-toggle {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; width: 100%; padding: 10px 12px;
+  border: none; background: none; color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; min-height: 44px;
+}
+.whats-new-release-toggle:hover { background: rgba(255, 255, 255, 0.04); }
+.whats-new-release-version { font: 600 14px/1.2 var(--font-sans); }
+.whats-new-release-date { color: var(--text-secondary); font: 500 12px/1.2 var(--font-mono, monospace); }
+.whats-new-chevron { margin-left: auto; font-size: 20px; color: var(--text-secondary); transition: transform var(--transition-fast); }
+.whats-new-release-toggle[aria-expanded='true'] .whats-new-chevron { transform: rotate(180deg); }
+.whats-new-release-body { padding: 0 12px 12px; border-top: 1px solid var(--glass-border); }
+.whats-new-release-body[hidden] { display: none; }
+.whats-new-release-summary { margin: 10px 0; color: var(--text-secondary); }
+.whats-new-release-body h4 { margin: 10px 0 4px; font: 600 12px/1.2 var(--font-sans); color: var(--text-primary); }
+.whats-new-release-body ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-secondary); }
+.whats-new-release-body li { margin-bottom: 4px; }
+.whats-new-footer { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid var(--glass-border); font-size: 11px; color: var(--text-secondary); }
 
 /* Hidden with the rest of the chrome. */
-body.ui-clean-view :is(#app-header, #layer-drawer, #about-dialog),
-body.recording-mode :is(#app-header, #layer-drawer, #about-dialog),
-body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog) { display: none !important; }
+body.ui-clean-view :is(#app-header, #layer-drawer, #about-dialog, #whats-new-dialog),
+body.recording-mode :is(#app-header, #layer-drawer, #about-dialog, #whats-new-dialog),
+body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog, #whats-new-dialog) { display: none !important; }
 
 /* Temporary phone behaviour (Phase 3 replaces this with a bottom sheet). */
 @media (max-width: 767px) {

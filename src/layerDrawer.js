@@ -160,6 +160,12 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
 
   listen(doc, 'keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented) return;
+    // What's New opens FROM About and sits visually on top of it, so it must
+    // close first — an Escape press always closes the topmost surface only.
+    if (whatsNew && !whatsNew.hidden) {
+      closeWhatsNew();
+      return;
+    }
     if (about && !about.hidden) {
       closeAbout();
       return;
@@ -412,12 +418,134 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
   listen(aboutBtn, 'click', () => (about?.hidden === false ? closeAbout() : openAbout()));
   listen(doc.getElementById('about-dialog-close'), 'click', closeAbout);
 
+  // -- What's New (release history) ------------------------------------------------
+  // Opened FROM the About dialog; About stays open behind it (closed separately,
+  // see the Escape handler above). Release content is static/local, so — unlike
+  // About's credits — there is no network fetch to lazily defer; it is still built
+  // only once, on first open, to avoid any DOM work before it is ever needed.
+  const whatsNew = doc.getElementById('whats-new-dialog');
+  const whatsNewBtn = doc.getElementById('about-whats-new-btn');
+  const whatsNewList = doc.getElementById('whats-new-list');
+  let releasesBuilt = false;
+
+  /** One collapsible release card. Exported indirectly via the module's default export below for direct testing. */
+  function buildReleaseCard(release, index) {
+    const card = doc.createElement('section');
+    card.className = 'whats-new-release';
+
+    const toggle = doc.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'whats-new-release-toggle';
+    toggle.setAttribute('aria-expanded', index === 0 ? 'true' : 'false');
+
+    const version = doc.createElement('span');
+    version.className = 'whats-new-release-version';
+    version.textContent = `v${release.version}`;
+    const date = doc.createElement('span');
+    date.className = 'whats-new-release-date';
+    date.textContent = release.date;
+    const statusBadge = doc.createElement('span');
+    statusBadge.className = 'whats-new-badge';
+    statusBadge.textContent = release.status;
+    toggle.append(version, date, statusBadge);
+    if (release.isLatest) {
+      const latestBadge = doc.createElement('span');
+      latestBadge.className = 'whats-new-badge whats-new-badge-latest';
+      latestBadge.textContent = 'Latest Release';
+      toggle.appendChild(latestBadge);
+    }
+    const chevron = doc.createElement('span');
+    chevron.className = 'material-symbols-outlined whats-new-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = 'expand_more';
+    toggle.appendChild(chevron);
+
+    const body = doc.createElement('div');
+    body.className = 'whats-new-release-body';
+    body.hidden = index !== 0; // newest release expanded by default; the rest start collapsed
+
+    const summary = doc.createElement('p');
+    summary.className = 'whats-new-release-summary';
+    summary.textContent = release.summary;
+    body.appendChild(summary);
+    for (const section of release.sections) {
+      const heading = doc.createElement('h4');
+      heading.textContent = section.label;
+      body.appendChild(heading);
+      const list = doc.createElement('ul');
+      for (const item of section.items) {
+        const li = doc.createElement('li');
+        li.textContent = item;
+        list.appendChild(li);
+      }
+      body.appendChild(list);
+    }
+
+    // A direct listener per toggle, not delegation on the list: simpler, and
+    // each card is built once and never re-created, so there is no handler
+    // buildup to worry about.
+    listen(toggle, 'click', () => {
+      const opening = toggle.getAttribute('aria-expanded') !== 'true';
+      toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      body.hidden = !opening;
+    });
+
+    card.append(toggle, body);
+    return card;
+  }
+
+  async function buildReleases() {
+    if (releasesBuilt || !whatsNewList) return;
+    releasesBuilt = true;
+    try {
+      const { RELEASES, getLatestRelease } = await import('./data/releaseHistory.js');
+      const latest = getLatestRelease();
+      const versionBadge = doc.getElementById('whats-new-version-badge');
+      if (versionBadge) versionBadge.textContent = `v${latest.version}`;
+      const meta = doc.getElementById('whats-new-dialog-meta');
+      if (meta) meta.textContent = `Current version: v${latest.version} · Build/Release: ${latest.date}`;
+      RELEASES.forEach((release, index) => whatsNewList.appendChild(buildReleaseCard(release, index)));
+    } catch {
+      releasesBuilt = false;
+    }
+  }
+
+  function openWhatsNew() {
+    if (!whatsNew) return;
+    whatsNew.hidden = false;
+    whatsNewBtn?.setAttribute('aria-expanded', 'true');
+    void buildReleases();
+    doc.getElementById('whats-new-dialog-close')?.focus?.();
+  }
+  function closeWhatsNew() {
+    if (!whatsNew) return;
+    whatsNew.hidden = true;
+    whatsNewBtn?.setAttribute('aria-expanded', 'false');
+    whatsNewBtn?.focus?.();
+  }
+  listen(whatsNewBtn, 'click', () => (whatsNew?.hidden === false ? closeWhatsNew() : openWhatsNew()));
+  listen(doc.getElementById('whats-new-dialog-close'), 'click', closeWhatsNew);
+  listen(doc.getElementById('whats-new-expand-all'), 'click', () => {
+    for (const toggle of whatsNewList?.querySelectorAll('.whats-new-release-toggle') || []) {
+      toggle.setAttribute('aria-expanded', 'true');
+      toggle.closest('.whats-new-release').querySelector('.whats-new-release-body').hidden = false;
+    }
+  });
+  listen(doc.getElementById('whats-new-collapse-all'), 'click', () => {
+    for (const toggle of whatsNewList?.querySelectorAll('.whats-new-release-toggle') || []) {
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.closest('.whats-new-release').querySelector('.whats-new-release-body').hidden = true;
+    }
+  });
+
   return {
     open,
     close,
     isOpen,
     openAbout,
     closeAbout,
+    openWhatsNew,
+    closeWhatsNew,
     openSearch,
     closeSearch,
     destroy() {
