@@ -5952,18 +5952,84 @@ export function parcelsProxy({ fetchImpl = null } = {}) {
           sendJson(res, 400, { error: 'lat and lon must be finite numbers within valid ranges.' });
           return;
         }
-        for (const candidateRegion of listParcelRegions()) {
-          const providerConfig = getParcelProviderConfig(candidateRegion);
-          if (providerConfig && isWithinCoverageBbox(lat, lon, providerConfig.coverageBbox)) {
-            sendJson(res, 200, {
-              region: providerConfig.region,
-              providerId: providerConfig.providerId,
-              sourceAgency: providerConfig.sourceAgency,
-            });
-            return;
+
+        // Property Intelligence A2.4 hardening: a point can legitimately fall
+        // inside more than one provider's coarse (rectangular, padded)
+        // coverageBbox near a shared state border — NC's and VA's bboxes do
+        // overlap. Collect EVERY bbox match first; the fast zero/one-match
+        // path below never depends on which provider happens to be listed
+        // first in the registry.
+        const bboxCandidates = listParcelRegions()
+          .map((candidateRegion) => getParcelProviderConfig(candidateRegion))
+          .filter((providerConfig) => providerConfig && isWithinCoverageBbox(lat, lon, providerConfig.coverageBbox));
+
+        if (bboxCandidates.length === 0) {
+          sendJson(res, 200, { region: null });
+          return;
+        }
+        if (bboxCandidates.length === 1) {
+          const providerConfig = bboxCandidates[0];
+          sendJson(res, 200, {
+            region: providerConfig.region,
+            providerId: providerConfig.providerId,
+            sourceAgency: providerConfig.sourceAgency,
+          });
+          return;
+        }
+
+        // Overlap: more than one coarse bbox matches. Disambiguate with the
+        // smallest EXISTING query that can settle it — each candidate's own
+        // provider.identifyParcel(lat, lon) (the same point-identify the
+        // public /identify route already uses; this never changes its
+        // outFields, so no owner field is added for this purpose and none
+        // of the returned parcel's fields are ever serialized into this
+        // response — only whether a parcel exists is used). Reuses the same
+        // identify cache/in-flight-coalescing as the public route, so a
+        // repeated border lookup doesn't re-hit upstream every time.
+        const confirmed = [];
+        for (const providerConfig of bboxCandidates) {
+          try {
+            const key = `${providerConfig.region}:${lat.toFixed(5)},${lon.toFixed(5)}`;
+            const cached = cacheGet(_identifyCache, key, IDENTIFY_TTL_MS);
+            let parcel;
+            if (cached !== undefined) {
+              parcel = cached;
+            } else {
+              const { promise } = coalesceProxyRequest(_inFlight, `identify:${key}`, async () => {
+                const provider = providerFor(providerConfig.region);
+                return provider ? provider.identifyParcel(lat, lon) : null;
+              });
+              parcel = await promise;
+              cacheSet(_identifyCache, key, parcel);
+            }
+            if (parcel) confirmed.push(providerConfig);
+          } catch (error) {
+            // One candidate's upstream failing must never fail the whole
+            // lookup — it simply does not confirm, same as a clean "no
+            // parcel here" from that provider.
+            console.error('[Parcels Proxy] coverage disambiguation', providerConfig.region, error?.message || error);
           }
         }
-        sendJson(res, 200, { region: null });
+
+        if (confirmed.length === 0) {
+          // Neither (or none) of the overlapping candidates could confirm a
+          // real parcel at this exact point — safer to report no coverage
+          // than to knowingly guess a state that might be wrong.
+          sendJson(res, 200, { region: null });
+          return;
+        }
+        // Deterministic tie-break for the case (not expected with real data —
+        // a parcel cannot genuinely sit in two states' parcel fabrics at
+        // once) where more than one candidate confirms: the
+        // alphabetically-first providerId among the CONFIRMED candidates —
+        // a property of the actual results, never of registry array order.
+        confirmed.sort((a, b) => a.providerId.localeCompare(b.providerId));
+        const winner = confirmed[0];
+        sendJson(res, 200, {
+          region: winner.region,
+          providerId: winner.providerId,
+          sourceAgency: winner.sourceAgency,
+        });
         return;
       }
 

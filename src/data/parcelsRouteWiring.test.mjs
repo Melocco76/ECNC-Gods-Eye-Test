@@ -26,7 +26,14 @@ test('the parcels route is GET-only', () => {
 test('a malformed parcelId is rejected with 400 before /detail or /geometry ever call the provider', () => {
   assert.match(parcelsFn, /providerConfig\?\.parcelIdPattern\?\.test\(parcelId\)/);
   const gateIndex = parcelsFn.indexOf('parcelIdPattern?.test(parcelId)');
-  const detailHandlerIndex = parcelsFn.indexOf("urlPath === '/detail'", parcelsFn.indexOf('try {'));
+  // Anchor on the real /detail HANDLER block (`) {` closes the `if`, inside
+  // the try/catch that actually calls the provider) — not the earlier
+  // combined `if (urlPath === '/detail' || urlPath === '/geometry')`
+  // pre-check, and not merely "after the first `try {` in the function",
+  // which stopped being a safe proxy for "inside the handler's own try
+  // block" once an earlier try/catch (A2.4's coverage disambiguation) was
+  // added before this one.
+  const detailHandlerIndex = parcelsFn.indexOf("urlPath === '/detail') {");
   assert.ok(gateIndex > -1 && detailHandlerIndex > -1 && gateIndex < detailHandlerIndex, 'the format check precedes the /detail and /geometry handlers');
 });
 

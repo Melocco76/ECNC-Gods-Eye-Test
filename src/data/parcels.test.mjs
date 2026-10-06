@@ -474,6 +474,13 @@ test('15. the generic layer module never hardcodes "or-deschutes" or any other r
   assert.equal(/deschutes/i.test(source), false, 'no county name anywhere — region comes only from /coverage at runtime');
 });
 
+test('19 (A2.4): the generic layer module contains no NC/VA-specific branching — new providers needed zero client changes', () => {
+  const source = code('./parcels.js');
+  for (const needle of ['nc-statewide', 'va-statewide', 'north-carolina', 'virginia', 'onemap', 'yadkin', 'vgin']) {
+    assert.equal(new RegExp(needle, 'i').test(source), false, needle);
+  }
+});
+
 test('this layer is registered with the id the registration files expect', () => {
   assert.equal(LAYER_ID, 'property-parcels');
   assert.equal(propertyParcelsLayer.id, LAYER_ID);
