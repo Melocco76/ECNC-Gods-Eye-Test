@@ -64,7 +64,13 @@ import {
   listParcelRegions,
   resolveParcelProvider,
 } from './src/data/parcelProviderRegistry.js';
-import { bboxIntersectsBbox, isValidBboxShape, isWithinCoverageBbox, toPublicParcel } from './src/data/parcelProviderData.js';
+import {
+  bboxIntersectsBbox,
+  isValidBboxShape,
+  isWithinCoverageBbox,
+  MAX_PARCEL_VIEWPORT_DEGREES as SHARED_MAX_PARCEL_VIEWPORT_DEGREES,
+  toPublicParcel,
+} from './src/data/parcelProviderData.js';
 import { createAdsbLolHistoryService } from './src/data/adsbLolTrace.js';
 import {
   ADMIN_LOGIN_BODY_MAX_BYTES,
@@ -107,6 +113,21 @@ import { VOICE_MODELS, isKnownVoiceTier, resolveVoiceModel } from './src/voice/v
 
 /** Resolve __dirname for ESM context. */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The single source of truth for the app's displayed version (see
+ * `src/data/appVersion.js`): package.json's own `version` field, read once at
+ * config-build time. Never hardcoded a second place — if this read fails for
+ * any reason, the client falls back to its own safe default rather than this
+ * config failing to build.
+ */
+const appPackageVersion = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'))?.version || '';
+  } catch {
+    return '';
+  }
+})();
 
 /**
  * Which launcher started this process, captured at MODULE LOAD — before the
@@ -5858,10 +5879,12 @@ export function parcelsProxy({ fetchImpl = null } = {}) {
   const BY_ID_TTL_MS = 30 * 60_000;
   const GEOMETRY_TTL_MS = 45 * 60_000;
   const VIEWPORT_TTL_MS = 45 * 60_000;
-  // Property Intelligence A2.1 — a strict initial viewport cap. 0.08° is
-  // roughly 8-9 km at Deschutes County's latitude; wide enough for a useful
-  // "zoomed into a neighborhood" view, far below "fetch a whole county".
-  const MAX_PARCEL_VIEWPORT_DEGREES = 0.08;
+  // Property Intelligence A2 — strict initial viewport cap, shared with the
+  // client layer (src/data/parcels.js) via parcelProviderData.js so there is
+  // one number, not two that could drift. This route is still the ONLY
+  // place that enforces it — the client's copy is a refusal-before-asking
+  // optimization, never a substitute for this check.
+  const MAX_PARCEL_VIEWPORT_DEGREES = SHARED_MAX_PARCEL_VIEWPORT_DEGREES;
   // Server-side only; the caller (a future map layer) can never raise this.
   const MAX_VIEWPORT_PARCELS = 400;
 
@@ -9316,6 +9339,9 @@ export default defineConfig(({ mode }) => {
     define: {
       'import.meta.env.GOOGLE_MAPS_API_KEY': JSON.stringify(env.GOOGLE_MAPS_BROWSER_KEY || env.GOOGLE_MAPS_API_KEY),
       'import.meta.env.CESIUM_ION_TOKEN': JSON.stringify(env.CESIUM_ION_TOKEN),
+      // The single centralized app version (src/data/appVersion.js reads only
+      // this) — sourced from package.json, never hardcoded a second time.
+      'import.meta.env.GEV_APP_VERSION': JSON.stringify(appPackageVersion),
     },
     build: {
       // The Cesium engine bundle is inherently large; raise the warning ceiling

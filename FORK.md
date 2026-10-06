@@ -45,4 +45,12 @@ and description, so the delta from upstream stays legible over time.
 
 ### Change log
 
-- _(none yet — this fork has not diverged from the upstream 0.1.1 baseline)_
+- **2026-10-06 — ECNC God's Eye 0.2.0**, the fork's first formal release
+  number (see `CHANGELOG.md` for the full list). This fork has diverged
+  substantially from the upstream 0.1.1 baseline since the notice above was
+  written — notably Property Intelligence, expanded live flight
+  intelligence, AIS regional/worldwide viewing, CCTV/Street View, TomTom
+  traffic, weather/radar, NASA FIRMS, self-hosted deployment support, and
+  ECNC-specific branding. `CHANGELOG.md` is the authoritative, maintained
+  record of fork-specific changes going forward; this section is kept for
+  the original fork notice's own context rather than duplicated line-by-line.

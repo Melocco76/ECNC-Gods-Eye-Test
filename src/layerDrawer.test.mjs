@@ -137,7 +137,7 @@ test('layer groups map every toggle-panel layer as specified', () => {
   const byGroup = Object.fromEntries(LAYER_GROUPS.map((g) => [g.id, [...g.layers]]));
   assert.deepEqual(byGroup.live, ['flights', 'military', 'ais-live-vessels', 'traffic', 'cctv', 'bikeshare', 'radio']);
   assert.deepEqual(byGroup.weather, ['weather-radar', 'local-firms', 'earthquakes']);
-  assert.deepEqual(byGroup.infrastructure, ['telegeography-submarine-cables', 'local-datacenters', 'local-dams', 'military-installations']);
+  assert.deepEqual(byGroup.infrastructure, ['telegeography-submarine-cables', 'local-datacenters', 'local-dams', 'military-installations', 'property-parcels']);
   assert.deepEqual(byGroup.space, ['satellites', 'rocket-launches']);
   assert.equal(groupIdForLayer('does-not-exist'), 'live', 'an unknown layer is never hidden');
   const ids = ['satellites', 'flights', 'weather-radar', 'zzz-new', 'local-dams', 'military'];

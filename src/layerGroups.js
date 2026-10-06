@@ -22,7 +22,7 @@ export const LAYER_GROUPS = Object.freeze([
   Object.freeze({
     id: 'infrastructure',
     label: 'Infrastructure',
-    layers: Object.freeze(['telegeography-submarine-cables', 'local-datacenters', 'local-dams', 'military-installations']),
+    layers: Object.freeze(['telegeography-submarine-cables', 'local-datacenters', 'local-dams', 'military-installations', 'property-parcels']),
   }),
   Object.freeze({
     id: 'space',

@@ -14,6 +14,7 @@ import bikeshareLayer from './data/bikeshare.js';
 import aisLiveVesselsLayer from './data/aisLiveVessels.js';
 import militaryInstallationsLayer from './data/militaryInstallations.js';
 import militaryAwarenessLayer from './data/militaryAwareness.js';
+import propertyParcelsLayer from './data/parcels.js';
 import radarOverlayLayer from './data/radarOverlay.js';
 import localDataLayers from './data/localLayers.js';
 import { initLayerDrawer } from './layerDrawer.js';
@@ -228,6 +229,7 @@ async function init() {
     dataManager.register(bikeshareLayer);
     dataManager.register(aisLiveVesselsLayer);
     dataManager.register(militaryInstallationsLayer);
+    dataManager.register(propertyParcelsLayer);
     dataManager.register(militaryAwarenessLayer);
     militaryAwarenessLayer.attachDataManager(dataManager);
     radarOverlayLayer.attachMapContext({ mapStackController, tileset });

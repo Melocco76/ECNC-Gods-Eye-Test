@@ -10219,6 +10219,7 @@ summary:focus-visible {
 }
 #about-dialog .about-body { padding: 12px 16px 16px; font-size: 14px; line-height: 1.5; }
 #about-dialog .about-body h3 { margin: 14px 0 6px; font: 600 14px/1.2 var(--font-sans); }
+#about-dialog .about-version { margin: 0 0 8px; font: 500 11px/1.2 var(--font-mono, monospace); letter-spacing: 0.02em; color: var(--text-secondary); text-transform: uppercase; }
 #about-dialog .about-credit { font-weight: 600; }
 #about-credits-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); }
 #about-credits-list li { margin-bottom: 4px; }

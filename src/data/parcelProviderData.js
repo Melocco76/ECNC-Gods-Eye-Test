@@ -18,6 +18,18 @@
 
 const SQ_M_PER_ACRE = 4046.8564224;
 
+/**
+ * Property Intelligence A2 — the single source of truth for the viewport
+ * span cap, shared by the server route (`vite.config.js`'s `parcelsProxy`,
+ * which enforces it — this constant does not change that enforcement, only
+ * where the number lives) and the client map layer (`src/data/parcels.js`,
+ * which uses it to refuse an obviously oversized request before ever
+ * causing a 400 — the server remains the authority either way). 0.08° is
+ * roughly 8-9 km at Deschutes County's latitude; wide enough for a useful
+ * "zoomed into a neighborhood" view, far below "fetch a whole county".
+ */
+export const MAX_PARCEL_VIEWPORT_DEGREES = 0.08;
+
 const text = (value) => {
   const cleaned = typeof value === 'string' ? value.trim() : '';
   return cleaned || null;

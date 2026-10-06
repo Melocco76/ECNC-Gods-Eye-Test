@@ -5,6 +5,56 @@ of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-06 — ECNC God's Eye: first formal fork release
+
+This is the **ECNC fork's own first formal release number**, starting a
+separate semantic-version line from the upstream God's Eye View project this
+fork began from at upstream 0.1.1 (see `FORK.md`). It is not a continuation
+of upstream's own release numbering, and the entries below are this fork's
+additions on top of that upstream baseline, not a rewrite of upstream's
+history. Versioning going forward follows standard semver (patch = fix/docs,
+minor = new backward-compatible capability, major = breaking/
+product-generation change).
+
+### Added
+
+- **Property Intelligence (foundation + visible boundaries).** A new,
+  provider-registry-driven parcel/property data feature: secure, rate-limited,
+  cached `/api/parcels/*` server routes (coverage, viewport, identify, detail,
+  geometry, address search) backed by an initial Deschutes County, Oregon
+  provider, with owner data deliberately kept out of every public API
+  response; and a new map-rendered **Property Boundaries** layer that draws
+  real parcel outlines once the map is zoomed into a supported, covered area.
+- **Expanded live flight intelligence.** A detailed Flight Details panel for
+  tracked civil aircraft (route, aircraft type/owner metadata, squawk,
+  altitude/speed, calculated bearing/distance/ETA) and selected-aircraft
+  flight history (a separate violet track from adsb.lol, distinct from the
+  live session trail), with hardened handling for long data gaps and
+  terrain-lookup bounds.
+- **AIS improvements and worldwide viewing.** Owner-configurable AIS regional
+  subscriptions, a personal per-browser region viewer filter independent of
+  the server's subscribed coverage, and a restored worldwide AIS viewer
+  option.
+- **CCTV / Street View enhancements.** A user-facing Street View static
+  viewer with accuracy and search-radius improvements, alongside the
+  existing CCTV camera layer.
+- **TomTom-backed street traffic flow visualization**, rendered as its own
+  map layer.
+- **Weather and radar improvements**, including a static weather radar
+  overlay and a local map weather status card (current conditions at the
+  view centre).
+- **NASA FIRMS active-fire support**, hardened for production reliability.
+- **Self-hosted deployment support**: container packaging and a preview-proxy
+  configuration enabling the app to run on self-hosted infrastructure (in
+  addition to the existing Cloud Run path).
+- **Modernized ECNC branding and UI**: a redesigned desktop header and layer
+  drawer, an optimized mobile interface, and ECNC-specific visual branding
+  distinct from upstream's own presentation.
+- A subtle, centrally-sourced version label (`ECNC God's Eye v0.2.0`) in the
+  existing About dialog, reading from `package.json` via one shared version
+  module so a future in-app Help/About screen can reuse the same source
+  without a second hardcoded version string.
+
 ## [0.1.1] — 2026-09-01 — Installation and live-data fixes
 
 ### Changed

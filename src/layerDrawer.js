@@ -372,6 +372,13 @@ export function initLayerDrawer({ viewer = null, doc = document, win = window } 
   // -- About / credits ------------------------------------------------------------
   const about = doc.getElementById('about-dialog');
   const aboutBtn = doc.getElementById('about-btn');
+  // Static and cheap — set once, not gated behind the dialog's lazy credits load.
+  const versionEl = doc.getElementById('about-version');
+  if (versionEl) {
+    import('./data/appVersion.js').then(({ APP_VERSION_LABEL }) => {
+      versionEl.textContent = APP_VERSION_LABEL;
+    }).catch(() => { /* version display is cosmetic — never block About on it */ });
+  }
   let creditsLoaded = false;
   async function loadCredits() {
     if (creditsLoaded) return;
