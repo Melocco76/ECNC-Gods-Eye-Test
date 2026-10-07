@@ -5,6 +5,60 @@ of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-07 — Regional Property Coverage Expansion
+
+### Added
+
+- **Tennessee parcel coverage**, using the public Tennessee Comptroller of
+  the Treasury statewide service — with known county gaps (several of
+  Tennessee's largest metro counties maintain their own independent
+  GIS/CAMA systems outside this statewide service and are not covered by
+  it).
+- **South Carolina parcel coverage for verified supported counties**
+  (York and Horry), each from that county's own public GIS service — not
+  statewide; South Carolina has no free/public statewide parcel polygon
+  service, and most of the state's 46 counties are not yet covered.
+- **Georgia parcel coverage for verified supported counties** (Fulton,
+  DeKalb, Gwinnett, Forsyth, Clarke, and Richmond), each from that
+  county's own public GIS service — not statewide; Georgia likewise has
+  no free/public statewide parcel polygon service, and most of the
+  state's 159 counties are not yet covered.
+- **Expanded Oregon parcel coverage** beyond the existing Deschutes
+  County provider, using verified public county/regional GIS services
+  (Multnomah, Washington, and Clackamas via Oregon Metro's regional
+  service, plus Marion, Lane, Jackson, Umatilla, and Baker) — not all 36
+  Oregon counties; the Oregon Department of Forestry's own statewide
+  taxlot map service was confirmed to not support the queries this
+  feature needs, and most Oregon counties are not yet covered.
+- **Deschutes County, Oregon keeps its richer, dedicated existing
+  provider** (official DIAL record links and fuller detail fields) —
+  the new Oregon coverage above never replaces or degrades it.
+
+### Improved
+
+- **Generic parcel coverage resolution now confirms real support before
+  reporting it.** `/api/parcels/coverage` previously trusted a single
+  matching coverage area outright; it now confirms that area actually
+  contains a real parcel (the same check already used when more than one
+  area overlaps) before answering — preventing a false "covered" answer
+  for a gap between two supported counties inside one provider's broader
+  coverage area.
+- **Safer behavior for partial-coverage providers.** An unsupported
+  county or area inside a provider's own coverage region now correctly
+  reports no coverage rather than appearing supported.
+- **Cross-provider/cross-state coverage disambiguation**, extended to
+  cover every new region added in this release alongside the existing
+  North Carolina/Virginia/Tennessee border handling.
+- **Privacy-safe field whitelisting** applied consistently across every
+  new provider added in this release — no owner name, owner mailing
+  address, or other personal identifier is ever requested or exposed, and
+  each provider carries its own regression coverage proving it.
+
+Coverage in this release is intentionally partial and varies by state and
+county — see each provider's own notes for exactly which counties are
+supported. This is not complete coverage for Tennessee, South Carolina,
+Georgia, or Oregon.
+
 ## [0.3.0] — 2026-10-07 — Property Details
 
 ### Added

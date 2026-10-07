@@ -33,12 +33,20 @@ test('exactly one release is marked latest, and it is the newest (index 0)', () 
   assert.equal(RELEASES[0].isLatest, true);
 });
 
-test('the v0.3.0 release has the expected date, status, and a real summary', () => {
+test('the v0.4.0 release has the expected date, status, and a real summary', () => {
   const latest = getLatestRelease();
   assert.equal(latest.date, '2026-10-07');
   assert.equal(latest.status, 'Production / Live');
   assert.equal(typeof latest.summary, 'string');
   assert.ok(latest.summary.length > 40);
+});
+
+test('v0.3.0 is preserved as historical release information, no longer latest, with its own fixed version string', () => {
+  const previous = RELEASES.find((release) => release.version === '0.3.0');
+  assert.ok(previous, '0.3.0 entry still present');
+  assert.equal(previous.isLatest, false);
+  assert.equal(previous.date, '2026-10-07');
+  assert.notEqual(previous, getLatestRelease());
 });
 
 test('v0.2.0 is preserved as historical release information, no longer latest, with its own fixed version string', () => {
@@ -49,8 +57,8 @@ test('v0.2.0 is preserved as historical release information, no longer latest, w
   assert.notEqual(previous, getLatestRelease());
 });
 
-test('releases are ordered newest-first: v0.3.0 then v0.2.0', () => {
-  assert.deepEqual(RELEASES.map((release) => release.version), [APP_VERSION, '0.2.0']);
+test('releases are ordered newest-first: v0.4.0 then v0.3.0 then v0.2.0', () => {
+  assert.deepEqual(RELEASES.map((release) => release.version), [APP_VERSION, '0.3.0', '0.2.0']);
 });
 
 test('every release carries structured, non-empty sections with real items (nothing is a placeholder)', () => {
@@ -82,14 +90,30 @@ test('historical Known/Deferred only repeats an already-documented deferral (par
   assert.match(known.items.join(' '), /later Property Intelligence phase|click.*parcel|parcel.*click/i);
 });
 
-test('the v0.3.0 release names Property Details, parcel selection/highlighting, and the NC/VA providers — nothing invented, no owner claim', () => {
-  const latest = getLatestRelease();
-  const allItems = latest.sections.flatMap((section) => section.items).join(' \n ');
+test('the historical v0.3.0 release names Property Details, parcel selection/highlighting, and the NC/VA providers — nothing invented, no owner claim', () => {
+  const previous = RELEASES.find((release) => release.version === '0.3.0');
+  const allItems = previous.sections.flatMap((section) => section.items).join(' \n ');
   assert.match(allItems, /Property Details/i);
   assert.match(allItems, /select|highlight/i);
   assert.match(allItems, /North Carolina/i);
   assert.match(allItems, /Virginia/i);
   assert.equal(/owner (lookup|search)/i.test(allItems), false, 'A3 never shipped owner lookup/search — the release notes must not claim it');
+});
+
+test('the v0.4.0 release names TN/SC/GA/expanded-OR coverage and the Deschutes-preserved precedent — nothing invented, no owner claim, no overstated completeness', () => {
+  const latest = getLatestRelease();
+  const allItems = latest.sections.flatMap((section) => section.items).join(' \n ');
+  assert.match(allItems, /Tennessee/i);
+  assert.match(allItems, /South Carolina/i);
+  assert.match(allItems, /Georgia/i);
+  assert.match(allItems, /Oregon/i);
+  assert.match(allItems, /Deschutes/i);
+  assert.equal(/owner (lookup|search)/i.test(allItems), false, 'v0.4.0 never shipped owner lookup/search — the release notes must not claim it');
+  // Honesty guard: this release must never claim complete/statewide coverage
+  // for any of the four expanded states. Matches only an unqualified
+  // completeness claim — the release notes' own honest "not statewide"/
+  // "not all 36 Oregon counties" disclaimers must never trip this.
+  assert.equal(/\bstatewide south carolina\b|\ball 46 counties\b|\bcomplete tennessee coverage\b|(?<!not )\ball 36 oregon counties\b|\bstatewide georgia\b/i.test(allItems), false, 'must never overstate geographic completeness');
 });
 
 test('this module never references AIS or Flight Intelligence internals — it is release-note text only', () => {

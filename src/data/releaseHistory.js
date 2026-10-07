@@ -35,6 +35,39 @@ export const RELEASES = [
     date: '2026-10-07',
     status: 'Production / Live',
     isLatest: true,
+    summary: 'Regional Property Coverage Expansion: new parcel coverage for verified counties '
+      + 'in Tennessee, South Carolina, and Georgia, plus expanded Oregon county coverage beyond '
+      + 'the existing, richer Deschutes County provider — and safer, confirmed coverage '
+      + 'resolution so an unsupported gap inside a provider\'s own coverage area never reports '
+      + 'as covered.',
+    sections: [
+      {
+        id: 'added',
+        label: 'Added',
+        items: [
+          'Tennessee parcel coverage via the public Tennessee Comptroller statewide service, with known county gaps (several large metro counties run their own independent systems and are not covered).',
+          'South Carolina parcel coverage for verified supported counties (York and Horry) — not statewide.',
+          'Georgia parcel coverage for verified supported counties (Fulton, DeKalb, Gwinnett, Forsyth, Clarke, and Richmond) — not statewide.',
+          'Expanded Oregon parcel coverage (Multnomah, Washington, Clackamas, Marion, Lane, Jackson, Umatilla, and Baker counties) — not all 36 Oregon counties.',
+          'Deschutes County, Oregon keeps its existing, richer dedicated provider (DIAL record links and fuller detail fields) — the new Oregon coverage never replaces or degrades it.',
+        ],
+      },
+      {
+        id: 'improved',
+        label: 'Improved',
+        items: [
+          'Parcel coverage resolution now confirms a provider actually has a real parcel before reporting it covered, instead of trusting a single broad coverage area outright — closing a gap where an unsupported county inside a provider\'s wider coverage area could appear covered.',
+          'Cross-provider/cross-state coverage disambiguation, extended to every region added in this release alongside the existing North Carolina/Virginia/Tennessee border handling.',
+          'Privacy-safe field whitelisting applied consistently across every new provider, each with its own regression coverage proving no owner or mailing field is ever requested or exposed.',
+        ],
+      },
+    ],
+  },
+  {
+    version: '0.3.0',
+    date: '2026-10-07',
+    status: 'Production / Live',
+    isLatest: false,
     summary: 'Property Details: click a Property Boundaries parcel to select and highlight '
       + 'it, then see its address, acreage, values, and improvements in a new right-rail '
       + 'panel — normalized across Oregon, North Carolina, and Virginia, with official '
