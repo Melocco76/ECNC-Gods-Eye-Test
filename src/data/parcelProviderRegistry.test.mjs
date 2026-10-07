@@ -135,6 +135,49 @@ test('9. the ga-counties parcel id pattern only accepts a namespaced supported-c
   assert.equal(config.parcelIdPattern.test('CHATHAM:1'), false, 'an unsupported county prefix must never match');
 });
 
+// -- Oregon statewide coverage expansion ------------------------------------------------------------
+
+test('10. or-statewide is registered with the exact confirmed county-boundary service and per-county field mappings', () => {
+  const config = getParcelProviderConfig('or-statewide');
+  assert.ok(config);
+  assert.equal(config.state, 'OR');
+  assert.equal(config.countyBoundaryUrl, 'https://services.arcgis.com/uUvqNMGPm7axC2dD/arcgis/rest/services/OR_CNTY/FeatureServer/0');
+  assert.equal(config.countyBoundaryNameField, 'COUNTY');
+  assert.deepEqual(Object.keys(config.counties), ['MULTNOMAH', 'WASHINGTON', 'CLACKAMAS', 'MARION', 'LANE', 'JACKSON', 'UMATILLA', 'BAKER']);
+  assert.equal(config.counties.MARION.layers.parcels.idField, 'ORTaxlot', 'confirmed live against the Marion FeatureServer');
+  assert.ok(!('DESCHUTES' in config.counties), 'Deschutes is deliberately excluded — the existing or-deschutes provider must remain preferred');
+});
+
+test('11. the three RLIS-backed counties share one FeatureServer, disambiguated by countyFilterField/Value', () => {
+  const config = getParcelProviderConfig('or-statewide');
+  const rlis = ['MULTNOMAH', 'WASHINGTON', 'CLACKAMAS'];
+  for (const key of rlis) {
+    assert.equal(config.counties[key].featureServerUrl, 'https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Taxlots_(Public)/FeatureServer');
+    assert.equal(config.counties[key].countyFilterField, 'COUNTY');
+  }
+  assert.deepEqual(rlis.map((k) => config.counties[k].countyFilterValue), ['M', 'W', 'C']);
+});
+
+test('12. or-statewide never maps an owner/mailing field for any supported county', () => {
+  const config = getParcelProviderConfig('or-statewide');
+  const forbidden = /owner|mail|feeowner|incareof|agent/i;
+  for (const countyKey of Object.keys(config.counties)) {
+    for (const [fieldKey, fieldName] of Object.entries(config.counties[countyKey].layers.parcels)) {
+      if (typeof fieldName !== 'string') continue;
+      assert.equal(forbidden.test(fieldName), false, `${countyKey}.${fieldKey} = ${fieldName}`);
+    }
+  }
+});
+
+test('13. the or-statewide parcel id pattern only accepts a namespaced supported-county form', () => {
+  const config = getParcelProviderConfig('or-statewide');
+  assert.equal(config.parcelIdPattern.test('MARION:0106.00S38.00E0000--000000300'), true);
+  assert.equal(config.parcelIdPattern.test('LANE:1501000000077'), true);
+  assert.equal(config.parcelIdPattern.test('BAKER:or-oid-42'), true);
+  assert.equal(config.parcelIdPattern.test('0106.00S38.00E0000--000000300'), false, 'a raw id with no county prefix must never match');
+  assert.equal(config.parcelIdPattern.test('DESCHUTES:1'), false, 'Deschutes must never match this provider\'s own id pattern');
+});
+
 test('an unknown region resolves to null everywhere — never a default/fallback provider', () => {
   assert.equal(getParcelProviderConfig('nc-forsyth'), null, 'per-county NC id not built — this provider is statewide');
   assert.equal(getParcelProviderConfig(''), null);
@@ -147,7 +190,7 @@ test('an unknown region resolves to null everywhere — never a default/fallback
 
 test('listParcelRegions reflects exactly the compiled-in registry keys', () => {
   assert.deepEqual(listParcelRegions(), Object.keys(PARCEL_PROVIDER_REGISTRY));
-  assert.deepEqual(listParcelRegions(), ['or-deschutes', 'nc-statewide', 'va-statewide', 'tn-statewide', 'sc-counties', 'ga-counties']);
+  assert.deepEqual(listParcelRegions(), ['or-deschutes', 'nc-statewide', 'va-statewide', 'tn-statewide', 'sc-counties', 'ga-counties', 'or-statewide']);
 });
 
 test('resolving any known region returns a usable provider object with the five required operations — no region-specific special-casing in the resolver', () => {

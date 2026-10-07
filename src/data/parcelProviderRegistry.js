@@ -23,6 +23,7 @@ import { createVirginiaStatewideProvider } from './parcelProviders/virginiaState
 import { createTennesseeStatewideProvider } from './parcelProviders/tennesseeStatewide.js';
 import { createSouthCarolinaCountyParcelsProvider } from './parcelProviders/southCarolinaCountyParcels.js';
 import { createGeorgiaCountyParcelsProvider } from './parcelProviders/georgiaCountyParcels.js';
+import { createOregonStatewideProvider } from './parcelProviders/oregonStatewide.js';
 
 /** Deschutes County, Oregon coverage bbox — padded from the service's own
  *  published extent ([-122.00124, 43.61111] to [-119.89659, 44.39349]).
@@ -168,6 +169,52 @@ const GA_COVERAGE_BBOX = Object.freeze({ west: -84.9, south: 33.25, east: -81.8,
 /** Every id this provider returns is namespaced `"<COUNTY>:<rawId>"` (see
  *  `georgiaCountyParcels.js`) — same reasoning as `SC_PARCEL_ID_PATTERN`. */
 const GA_PARCEL_ID_PATTERN = /^(?:FULTON|DEKALB|GWINNETT|FORSYTH|CLARKE|RICHMOND):(?:ga-oid-\d+|[A-Za-z0-9][A-Za-z0-9 /.\-]{0,39})$/;
+
+/**
+ * Oregon's own named primary source for this phase — ODF's public
+ * `TaxlotsDisplay` MapServer — was confirmed live to exist exactly as
+ * described but to be MAP-ONLY: its `capabilities` field reports
+ * `"Map"` and both `/query` and `/identify` return a hard ArcGIS
+ * "capability not supported" error on every layer tested. It cannot be
+ * queried for parcel data at all. Coverage beyond the existing Deschutes
+ * provider is therefore built county-by-county instead, from each
+ * supported county's own genuinely query-capable service; see
+ * `oregonStatewide.js`'s module docstring for the full
+ * discovery/rejection record and why Deschutes is deliberately excluded
+ * from this provider's own county map.
+ */
+
+/** A statewide Oregon county-boundary layer (field `COUNTY`) — confirmed
+ *  live to resolve a point to its county name (e.g. a Multnomah point
+ *  returns `"Multnomah"`). Used by `oregonStatewide.js` for the real
+ *  county resolution — never a bbox guess. */
+const OR_COUNTY_BOUNDARY_URL = 'https://services.arcgis.com/uUvqNMGPm7axC2dD/arcgis/rest/services/OR_CNTY/FeatureServer/0';
+const OR_COUNTY_BOUNDARY_NAME_FIELD = 'COUNTY';
+
+/** Coarse union pre-filter spanning all eight supported counties
+ *  (Multnomah/Washington/Clackamas — Portland metro; Marion — Salem;
+ *  Lane — Eugene; Jackson — Medford; Umatilla — Pendleton; Baker — Baker
+ *  City), padded. Deliberately coarse — see `SC_COVERAGE_BBOX` above for
+ *  why. This rectangle geometrically overlaps `OR_DESCHUTES_COVERAGE_BBOX`
+ *  (Deschutes sits centrally in Oregon) — harmless, because
+ *  `oregonStatewide.js`'s own `identifyParcel` always returns `null` for
+ *  a Deschutes-resolved point, so the generic multi-candidate
+ *  disambiguation never has an actual tie to break at runtime. */
+const OR_STATEWIDE_COVERAGE_BBOX = Object.freeze({ west: -124.3, south: 41.9, east: -117.0, north: 46.2 });
+
+/** Every id this provider returns is namespaced `"<COUNTY>:<rawId>"` —
+ *  same reasoning as `SC_PARCEL_ID_PATTERN`/`GA_PARCEL_ID_PATTERN`. Raw
+ *  Oregon taxlot ids legitimately contain periods, dashes, and spaces
+ *  (e.g. `"0106.00S38.00E0000--000000300"`), confirmed live, so the
+ *  allowed character set and length are both wider than SC's/GA's. */
+const OR_PARCEL_ID_PATTERN = /^(?:MULTNOMAH|WASHINGTON|CLACKAMAS|MARION|LANE|JACKSON|UMATILLA|BAKER):(?:or-oid-\d+|[A-Za-z0-9][A-Za-z0-9 /.\-]{0,59})$/;
+
+/** Geometry-generalization offset (WGS84 degrees) applied only to the
+ *  three dense Portland-metro counties' viewport queries, so a
+ *  heavily-built-up viewport's response stays bounded — the same
+ *  `maxAllowableOffset` technique `virginiaStatewide.js` uses. Rural
+ *  counties don't need it. */
+const OR_METRO_GENERALIZE_OFFSET = 0.00002;
 
 export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
   'or-deschutes': Object.freeze({
@@ -600,6 +647,281 @@ export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
     }),
     search: Object.freeze({ minLength: 3, maxLength: 80, resultCap: 15 }),
     factory: createGeorgiaCountyParcelsProvider,
+  }),
+
+  'or-statewide': Object.freeze({
+    region: 'or-statewide',
+    providerId: 'oregon-statewide-county-parcels',
+    state: 'OR',
+    county: null, // multi-county — resolved per-request via the county-boundary service; see docstring above
+    sourceAgency: 'Oregon county GIS departments and Oregon Metro (per-county; see each county config)',
+    countyBoundaryUrl: OR_COUNTY_BOUNDARY_URL,
+    countyBoundaryNameField: OR_COUNTY_BOUNDARY_NAME_FIELD,
+    coverageBbox: OR_STATEWIDE_COVERAGE_BBOX,
+    parcelIdPattern: OR_PARCEL_ID_PATTERN,
+    // Per-county schemas confirmed live this phase — field names verified
+    // against each service's own `?f=json` metadata, then a live `/query`
+    // with the exact intended outFields list (never guessed). Owner/
+    // mailing fields exist upstream for several of these counties but are
+    // DELIBERATELY not mapped anywhere in this config — see
+    // `oregonStatewide.js` and its privacy tests. Deschutes is
+    // DELIBERATELY absent — see `oregonStatewide.js`'s module docstring.
+    counties: Object.freeze({
+      // Oregon Metro's "RLIS Taxlots (Public)" FeatureServer covers all
+      // three of these counties in ONE layer, disambiguated per-county
+      // by `countyFilterField`/`countyFilterValue` (confirmed live
+      // distinct values: 'M'/'W'/'C').
+      MULTNOMAH: Object.freeze({
+        sourceAgency: 'Oregon Metro (RLIS)',
+        featureServerUrl: 'https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Taxlots_(Public)/FeatureServer',
+        bbox: Object.freeze({ west: -123.0, south: 45.4, east: -122.35, north: 45.65 }),
+        countyFilterField: 'COUNTY',
+        countyFilterValue: 'M',
+        generalizeOffset: OR_METRO_GENERALIZE_OFFSET,
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 3,
+            idField: 'ORTAXLOT',
+            altIdField: 'TLID',
+            objectIdField: 'FID',
+            addressField: 'SITEADDR',
+            cityField: 'SITECITY',
+            zipField: 'SITEZIP',
+            acreageField: 'A_T_ACRES',
+            landUseField: 'LANDUSE',
+            zoningField: null,
+            landValueField: 'LANDVAL',
+            improvementValueField: 'BLDGVAL',
+            marketValueField: 'TOTALVAL',
+            assessedValueField: 'ASSESSVAL',
+            taxableValueField: null,
+            yearBuiltField: 'YEARBUILT',
+            buildingAreaField: 'BLDGSQFT',
+            referenceLinkField: null,
+          }),
+        }),
+      }),
+      WASHINGTON: Object.freeze({
+        sourceAgency: 'Oregon Metro (RLIS)',
+        featureServerUrl: 'https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Taxlots_(Public)/FeatureServer',
+        bbox: Object.freeze({ west: -123.3, south: 45.35, east: -122.7, north: 45.65 }),
+        countyFilterField: 'COUNTY',
+        countyFilterValue: 'W',
+        generalizeOffset: OR_METRO_GENERALIZE_OFFSET,
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 3,
+            idField: 'ORTAXLOT',
+            altIdField: 'TLID',
+            objectIdField: 'FID',
+            addressField: 'SITEADDR',
+            cityField: 'SITECITY',
+            zipField: 'SITEZIP',
+            acreageField: 'A_T_ACRES',
+            landUseField: 'LANDUSE',
+            zoningField: null,
+            landValueField: 'LANDVAL',
+            improvementValueField: 'BLDGVAL',
+            marketValueField: 'TOTALVAL',
+            assessedValueField: 'ASSESSVAL',
+            taxableValueField: null,
+            yearBuiltField: 'YEARBUILT',
+            buildingAreaField: 'BLDGSQFT',
+            referenceLinkField: null,
+          }),
+        }),
+      }),
+      CLACKAMAS: Object.freeze({
+        sourceAgency: 'Oregon Metro (RLIS)',
+        featureServerUrl: 'https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Taxlots_(Public)/FeatureServer',
+        bbox: Object.freeze({ west: -122.75, south: 44.95, east: -121.8, north: 45.55 }),
+        countyFilterField: 'COUNTY',
+        countyFilterValue: 'C',
+        generalizeOffset: OR_METRO_GENERALIZE_OFFSET,
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 3,
+            idField: 'ORTAXLOT',
+            altIdField: 'TLID',
+            objectIdField: 'FID',
+            addressField: 'SITEADDR',
+            cityField: 'SITECITY',
+            zipField: 'SITEZIP',
+            acreageField: 'A_T_ACRES',
+            landUseField: 'LANDUSE',
+            zoningField: null,
+            landValueField: 'LANDVAL',
+            improvementValueField: 'BLDGVAL',
+            marketValueField: 'TOTALVAL',
+            assessedValueField: 'ASSESSVAL',
+            taxableValueField: null,
+            yearBuiltField: 'YEARBUILT',
+            buildingAreaField: 'BLDGSQFT',
+            referenceLinkField: null,
+          }),
+        }),
+      }),
+      MARION: Object.freeze({
+        sourceAgency: 'Marion County, OR GIS',
+        featureServerUrl: 'https://services1.arcgis.com/sYGZnQPdJ0azuLyn/arcgis/rest/services/CDES_Marion/FeatureServer',
+        bbox: Object.freeze({ west: -123.3, south: 44.6, east: -122.3, north: 45.3 }),
+        countyFilterField: null,
+        countyFilterValue: null,
+        generalizeOffset: null,
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 2,
+            idField: 'ORTaxlot',
+            altIdField: 'MapTaxlot',
+            objectIdField: 'OBJECTID',
+            addressField: null, // confirmed live: this schema has no address field at all
+            cityField: null,
+            zipField: null,
+            acreageField: 'TaxlotAcre',
+            landUseField: null,
+            zoningField: null,
+            landValueField: null,
+            improvementValueField: null,
+            marketValueField: null,
+            assessedValueField: null,
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+            referenceLinkField: 'REFLink', // confirmed live: a genuine per-parcel https:// official-record URL
+          }),
+        }),
+      }),
+      LANE: Object.freeze({
+        sourceAgency: 'Lane County, OR GIS',
+        featureServerUrl: 'https://lcmaps.lanecounty.org/arcgis/rest/services/LaneCountyMaps/AddressParcel/MapServer',
+        bbox: Object.freeze({ west: -124.2, south: 43.4, east: -121.8, north: 44.3 }),
+        countyFilterField: null,
+        countyFilterValue: null,
+        generalizeOffset: null,
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 2,
+            idField: 'MAPTAXLOT',
+            altIdField: 'TAXLOT',
+            objectIdField: 'OBJECTID',
+            addressField: null, // confirmed live: this schema's only address-shaped fields (ADDR1-3/OWNERCITY/OWNERPRVST/OWNERZIP) are the owner mailing block — never read
+            cityField: null,
+            zipField: null,
+            acreageField: 'MAPACRES',
+            landUseField: 'PROPCLDES',
+            zoningField: 'zoningdesc',
+            landValueField: 'LANDVAL',
+            improvementValueField: 'IMPVAL',
+            marketValueField: null,
+            assessedValueField: 'ASSDTOTVAL',
+            taxableValueField: 'TAXABLE_VALUE',
+            yearBuiltField: 'YEARBLT',
+            buildingAreaField: null,
+            referenceLinkField: null,
+          }),
+        }),
+      }),
+      JACKSON: Object.freeze({
+        sourceAgency: 'Jackson County, OR GIS (Medford)',
+        featureServerUrl: 'https://maps.medfordmaps.org/arcgis/rest/services/Public/Taxlots_with_SiteAddresses_Service/FeatureServer',
+        bbox: Object.freeze({ west: -123.3, south: 42.0, east: -122.3, north: 42.8 }),
+        countyFilterField: null,
+        countyFilterValue: null,
+        generalizeOffset: null,
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 1,
+            idField: 'MAPLOT',
+            altIdField: null,
+            objectIdField: 'OBJECTID',
+            addressField: 'SITEADD', // confirmed live and distinct from the separate FEEOWNER/INCAREOF/ADDRESS1-2/CITY/STATE/ZIPCODE block — never read
+            cityField: null,
+            zipField: null,
+            acreageField: 'ACREAGE',
+            landUseField: 'PROPCLASS',
+            zoningField: null,
+            landValueField: 'LANDVALUE',
+            improvementValueField: 'IMPVALUE',
+            marketValueField: null,
+            assessedValueField: 'ASSESSLAND',
+            taxableValueField: null,
+            yearBuiltField: 'YEARBLT',
+            buildingAreaField: null,
+            referenceLinkField: null,
+          }),
+        }),
+      }),
+      UMATILLA: Object.freeze({
+        sourceAgency: 'Umatilla County, OR GIS',
+        featureServerUrl: 'https://services3.arcgis.com/tNPgIZWOB0Efvm0g/arcgis/rest/services/Tax_Lots/FeatureServer',
+        bbox: Object.freeze({ west: -119.9, south: 45.0, east: -118.3, north: 46.1 }),
+        countyFilterField: null,
+        countyFilterValue: null,
+        generalizeOffset: null,
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'TLID',
+            altIdField: null,
+            objectIdField: 'FID',
+            addressField: 'SITUS_STRE', // confirmed live and distinct from the separate MAILING_NA/IN_CARE_OF/AGENT/M_ADDRESS/M_CITY/M_STATE/zip block — never read
+            cityField: 'SITUS_CITY',
+            zipField: 'SITUS_ZIP',
+            acreageField: 'SUM_OF_ACR',
+            landUseField: null,
+            zoningField: null,
+            landValueField: null,
+            improvementValueField: null,
+            marketValueField: 'RMV_PROPER',
+            assessedValueField: null,
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+            referenceLinkField: null,
+          }),
+        }),
+      }),
+      BAKER: Object.freeze({
+        sourceAgency: 'Baker County, OR Assessor',
+        featureServerUrl: 'https://services3.arcgis.com/QNL6ESLaMOiSE2DQ/arcgis/rest/services/Baker_County_Oregon_Taxlot_Shapefile/FeatureServer',
+        bbox: Object.freeze({ west: -118.3, south: 44.1, east: -117.1, north: 45.1 }),
+        countyFilterField: null,
+        countyFilterValue: null,
+        generalizeOffset: null,
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'ORTaxlot',
+            altIdField: 'MapTaxlot',
+            objectIdField: 'FID',
+            addressField: null, // confirmed live: this schema has no address field at all
+            cityField: null,
+            zipField: null,
+            acreageField: 'TaxlotAcre',
+            landUseField: null,
+            zoningField: null,
+            landValueField: null,
+            improvementValueField: null,
+            marketValueField: null,
+            assessedValueField: null,
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+            referenceLinkField: 'REFLink', // confirmed live: present in schema, but blank for every sampled record — assembleFromFeature's own http(s):// check means a blank value never produces a fake link
+          }),
+        }),
+      }),
+    }),
+    // Reflects the UNION of what's possible across supported counties —
+    // an individual county may still return null for a field its own
+    // schema lacks; Part 9/10's "missing data simply omits the row" rule
+    // covers that, not a capabilities flag.
+    capabilities: Object.freeze({
+      search: true, identify: true, geometry: true, values: true, improvements: true, zoning: true, owner: false,
+      taxable: true, landUse: true, effectiveDate: false,
+    }),
+    search: Object.freeze({ minLength: 3, maxLength: 80, resultCap: 15 }),
+    factory: createOregonStatewideProvider,
   }),
 });
 

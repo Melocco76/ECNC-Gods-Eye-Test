@@ -502,6 +502,13 @@ test('15 (GA coverage expansion): the generic layer module contains no Georgia-s
   }
 });
 
+test('16 (OR statewide coverage expansion): the generic layer module contains no Oregon-statewide-specific branching — the new provider needed zero client changes', () => {
+  const source = code('./parcels.js');
+  for (const needle of ['or-statewide', 'multnomah', 'washington', 'clackamas', 'marion', 'jackson', 'umatilla', 'maptaxlot', 'ortaxlot']) {
+    assert.equal(new RegExp(needle, 'i').test(source), false, needle);
+  }
+});
+
 test('this layer is registered with the id the registration files expect', () => {
   assert.equal(LAYER_ID, 'property-parcels');
   assert.equal(propertyParcelsLayer.id, LAYER_ID);

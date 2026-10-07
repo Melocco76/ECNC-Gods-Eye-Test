@@ -5956,9 +5956,9 @@ export function parcelsProxy({ fetchImpl = null } = {}) {
         // Property Intelligence A2.4 hardening: a point can legitimately fall
         // inside more than one provider's coarse (rectangular, padded)
         // coverageBbox near a shared state border — NC's and VA's bboxes do
-        // overlap. Collect EVERY bbox match first; the fast zero/one-match
-        // path below never depends on which provider happens to be listed
-        // first in the registry.
+        // overlap. Collect EVERY bbox match first; the confirmation step
+        // below never depends on which provider happens to be listed first
+        // in the registry, nor on how many candidates there are.
         const bboxCandidates = listParcelRegions()
           .map((candidateRegion) => getParcelProviderConfig(candidateRegion))
           .filter((providerConfig) => providerConfig && isWithinCoverageBbox(lat, lon, providerConfig.coverageBbox));
@@ -5967,25 +5967,23 @@ export function parcelsProxy({ fetchImpl = null } = {}) {
           sendJson(res, 200, { region: null });
           return;
         }
-        if (bboxCandidates.length === 1) {
-          const providerConfig = bboxCandidates[0];
-          sendJson(res, 200, {
-            region: providerConfig.region,
-            providerId: providerConfig.providerId,
-            sourceAgency: providerConfig.sourceAgency,
-          });
-          return;
-        }
 
-        // Overlap: more than one coarse bbox matches. Disambiguate with the
-        // smallest EXISTING query that can settle it — each candidate's own
-        // provider.identifyParcel(lat, lon) (the same point-identify the
-        // public /identify route already uses; this never changes its
-        // outFields, so no owner field is added for this purpose and none
-        // of the returned parcel's fields are ever serialized into this
-        // response — only whether a parcel exists is used). Reuses the same
-        // identify cache/in-flight-coalescing as the public route, so a
-        // repeated border lookup doesn't re-hit upstream every time.
+        // Property Intelligence — Oregon/SC/GA coverage-expansion hardening:
+        // a SINGLE bbox match is no longer trusted blindly. A config-driven
+        // regional provider (or-statewide, sc-counties, ga-counties, ...)
+        // necessarily has ONE coarse coverageBbox spanning every supported
+        // county, which leaves real unsupported ground in between (e.g. most
+        // of Oregon between Marion and Baker) — a bare bbox match there would
+        // report a region with no actual parcel underneath it. Every
+        // candidate, whether there is one or several, is now confirmed the
+        // same way: via that candidate's own provider.identifyParcel(lat, lon)
+        // (the same point-identify the public /identify route already uses;
+        // this never changes its outFields, so no owner field is added for
+        // this purpose and none of the returned parcel's fields are ever
+        // serialized into this response — only whether a parcel exists is
+        // used). Reuses the same identify cache/in-flight-coalescing as the
+        // public route, so a repeated lookup — single-candidate or
+        // overlapping — doesn't re-hit upstream every time.
         const confirmed = [];
         for (const providerConfig of bboxCandidates) {
           try {

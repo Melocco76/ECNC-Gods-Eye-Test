@@ -23,9 +23,12 @@ const ZONING_URL = `${config.zoning.serviceUrl}/query`;
 const INSIDE_LAT = 44.0578;
 const INSIDE_LON = -121.3153;
 const INSIDE_BBOX = { south: 44.05, west: -121.32, north: 44.06, east: -121.31 };
-// Portland, OR — outside every configured provider's coverage.
-const OUTSIDE_LAT = 45.5152;
-const OUTSIDE_LON = -122.6784;
+// Denver, CO — outside every configured provider's coverage, including
+// or-statewide's own coarse coverageBbox (Portland, OR, the original pick
+// here, stopped being "outside" once the OR statewide provider added real
+// coverage over Multnomah County).
+const OUTSIDE_LAT = 39.0;
+const OUTSIDE_LON = -105.0;
 
 function taxlotFeature(taxlot) {
   return {
@@ -127,13 +130,20 @@ test('/coverage rejects invalid/missing lat or lon with 400', async () => {
 });
 
 test('/coverage derives its answer from the registry, not from a frontend/Deschutes-specific branch in the route', async () => {
-  // A location of PURE registry math never needs the mocked upstream at all —
-  // if it worked, it worked by walking listParcelRegions()/coverageBbox.
-  const upstream = fakeFetch([]); // throws on ANY upstream call
+  // Bend/Deschutes now falls inside BOTH or-deschutes's and or-statewide's
+  // coarse coverageBbox (the OR statewide provider's own bbox necessarily
+  // spans most of the state — see oregonStatewide.js's docstring), so this
+  // is genuinely a real multi-candidate disambiguation case, not a pure
+  // zero-network registry lookup. Still provider-generic: or-deschutes
+  // confirms a real parcel, or-statewide's own identify correctly
+  // self-excludes Deschutes (see its module docstring) — the route never
+  // special-cases either by name.
+  const orBoundaryUrl = `${getParcelProviderConfig('or-statewide').countyBoundaryUrl}/query`;
+  const upstream = fullUpstream([[orBoundaryUrl, okJson({ features: [{ attributes: { COUNTY: 'Deschutes' } }] })]]);
   const { call } = installParcels(upstream.impl);
   const res = await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`);
   assert.equal(res.statusCode, 200);
-  assert.equal(upstream.calls.length, 0, 'coverage never touches the network');
+  assert.deepEqual(json(res), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
 });
 
 // -- /viewport ------------------------------------------------------------------------------------
@@ -243,22 +253,42 @@ const VA_FEATURE_WITH_OWNER_FIELDS = {
   geometry: { rings: [[[VA_BBOX.west, VA_BBOX.south], [VA_BBOX.east, VA_BBOX.south], [VA_BBOX.east, VA_BBOX.north], [VA_BBOX.west, VA_BBOX.north], [VA_BBOX.west, VA_BBOX.south]]] },
 };
 
-test('3. /coverage near Yadkinville, NC resolves nc-statewide, purely from the registry (no upstream call)', async () => {
-  const upstream = fakeFetch([]); // throws on ANY upstream call
+test('3. /coverage near Yadkinville, NC resolves nc-statewide once identify confirms a real parcel there', async () => {
+  // Coverage-route hardening: a single bbox match is no longer trusted
+  // blindly (a config-driven regional provider's own coarse bbox can span
+  // real unsupported ground) — every candidate, single or overlapping, is
+  // now confirmed via its own identifyParcel before /coverage reports it.
+  const upstream = fakeFetch([[NC_LAYER_URL, okJson({ features: [NC_FEATURE_WITH_OWNER_FIELDS] })]]);
   const { call } = installParcels(upstream.impl);
   const res = await call(`/coverage?lat=${NC_LAT}&lon=${NC_LON}`);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(json(res), { region: 'nc-statewide', providerId: 'north-carolina-onemap', sourceAgency: ncConfig.sourceAgency });
-  assert.equal(upstream.calls.length, 0);
+  assert.equal(upstream.calls.length, 1, 'exactly one identify call to confirm the single candidate');
 });
 
-test('4. /coverage for a clearly in-Virginia point resolves va-statewide, purely from the registry (no upstream call)', async () => {
-  const upstream = fakeFetch([]);
+test('3b. the same NC point with NO real parcel there (identify finds nothing) resolves region:null, never a bbox-only guess', async () => {
+  const upstream = fakeFetch([[NC_LAYER_URL, okJson({ features: [] })]]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${NC_LAT}&lon=${NC_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: null });
+});
+
+test('3c. the same NC point when the provider\'s own identify throws also resolves region:null, never a bbox-only guess', async () => {
+  const upstream = fakeFetch([[NC_LAYER_URL, upstreamThrows]]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${NC_LAT}&lon=${NC_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: null });
+});
+
+test('4. /coverage for a clearly in-Virginia point resolves va-statewide once identify confirms a real parcel there', async () => {
+  const upstream = fakeFetch([[VA_LAYER_URL, okJson({ features: [VA_FEATURE_WITH_OWNER_FIELDS] })]]);
   const { call } = installParcels(upstream.impl);
   const res = await call(`/coverage?lat=${VA_LAT}&lon=${VA_LON}`);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(json(res), { region: 'va-statewide', providerId: 'virginia-statewide', sourceAgency: vaConfig.sourceAgency });
-  assert.equal(upstream.calls.length, 0);
+  assert.equal(upstream.calls.length, 1, 'exactly one identify call to confirm the single candidate');
 });
 
 test('5. the existing Deschutes coverage resolution is unaffected by adding NC/VA', async () => {
@@ -356,13 +386,13 @@ const TN_FEATURE_WITH_OWNER_FIELDS = {
   geometry: { rings: [[[TN_BBOX.west, TN_BBOX.south], [TN_BBOX.east, TN_BBOX.south], [TN_BBOX.east, TN_BBOX.north], [TN_BBOX.west, TN_BBOX.north], [TN_BBOX.west, TN_BBOX.south]]] },
 };
 
-test('3. /coverage inside Tennessee resolves tn-statewide, purely from the registry (no upstream call)', async () => {
-  const upstream = fakeFetch([]); // throws on ANY upstream call
+test('3. /coverage inside Tennessee resolves tn-statewide once identify confirms a real parcel there', async () => {
+  const upstream = fakeFetch([[TN_LAYER_URL, okJson({ features: [TN_FEATURE_WITH_OWNER_FIELDS], exceededTransferLimit: false })]]);
   const { call } = installParcels(upstream.impl);
   const res = await call(`/coverage?lat=${TN_LAT}&lon=${TN_LON}`);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(json(res), { region: 'tn-statewide', providerId: 'tennessee-statewide', sourceAgency: tnConfig.sourceAgency });
-  assert.equal(upstream.calls.length, 0);
+  assert.equal(upstream.calls.length, 1, 'exactly one identify call to confirm the single candidate');
 });
 
 test('4/5. TN /viewport returns real geometry via the SAME generic route, outSR=4326 requested, no owner data', async () => {
@@ -397,9 +427,9 @@ test('10. TN saturation is reported via exceededTransferLimit even when the feat
 test('12. existing NC/VA/OR coverage resolution is unaffected by adding TN', async () => {
   const { call } = installParcels(fullUpstream().impl);
   assert.deepEqual(json(await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`)), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
-  const ncUpstream = fakeFetch([]);
+  const ncUpstream = fakeFetch([[NC_LAYER_URL, okJson({ features: [NC_FEATURE_WITH_OWNER_FIELDS] })]]);
   assert.deepEqual(json(await installParcels(ncUpstream.impl).call(`/coverage?lat=${NC_LAT}&lon=${NC_LON}`)), { region: 'nc-statewide', providerId: 'north-carolina-onemap', sourceAgency: ncConfig.sourceAgency });
-  const vaUpstream = fakeFetch([]);
+  const vaUpstream = fakeFetch([[VA_LAYER_URL, okJson({ features: [VA_FEATURE_WITH_OWNER_FIELDS] })]]);
   assert.deepEqual(json(await installParcels(vaUpstream.impl).call(`/coverage?lat=${VA_LAT}&lon=${VA_LON}`)), { region: 'va-statewide', providerId: 'virginia-statewide', sourceAgency: vaConfig.sourceAgency });
 });
 
@@ -423,16 +453,27 @@ const vaIdentifyFeature = {
 const noFeatures = okJson({ features: [] });
 const upstreamThrows = () => Promise.reject(new Error('upstream exploded'));
 
-test('1. a single bbox match (the already-covered inland cases) performs no identify/disambiguation call at all', async () => {
-  const upstream = fakeFetch([]); // throws on ANY upstream call
+test('1. a single bbox match still confirms via exactly one identify call — never a bbox-only guess, and never the full multi-candidate machinery either', async () => {
+  // NC/VA stay genuinely single-bbox-match (Bend/Deschutes no longer is —
+  // the OR statewide provider's own coverageBbox necessarily spans most
+  // of Oregon, see oregonStatewide.js's docstring — that real
+  // multi-candidate case is covered by a dedicated OR test instead).
+  // Coverage-route hardening: a lone bbox candidate is confirmed via its
+  // own identifyParcel exactly once, the same confirmation every
+  // candidate gets — not zero calls (the old "trust the bbox" fast path)
+  // and not more than one (no redundant re-querying of the sole candidate).
+  const upstream = fakeFetch([
+    [NC_LAYER_URL, okJson({ features: [NC_FEATURE_WITH_OWNER_FIELDS] })],
+    [VA_LAYER_URL, okJson({ features: [VA_FEATURE_WITH_OWNER_FIELDS] })],
+  ]);
   const { call } = installParcels(upstream.impl);
   const nc = await call(`/coverage?lat=${NC_LAT}&lon=${NC_LON}`);
   const va = await call(`/coverage?lat=${VA_LAT}&lon=${VA_LON}`);
-  const or = await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`);
   assert.equal(nc.statusCode, 200);
   assert.equal(va.statusCode, 200);
-  assert.equal(or.statusCode, 200);
-  assert.equal(upstream.calls.length, 0, 'none of these single-bbox-match points ever touch the network');
+  assert.deepEqual(json(nc), { region: 'nc-statewide', providerId: 'north-carolina-onemap', sourceAgency: ncConfig.sourceAgency });
+  assert.deepEqual(json(va), { region: 'va-statewide', providerId: 'virginia-statewide', sourceAgency: vaConfig.sourceAgency });
+  assert.equal(upstream.calls.length, 2, 'exactly one identify call per single-candidate lookup — never zero, never duplicated');
 });
 
 test('2. zero bbox matches still resolves region:null with no upstream call', async () => {
@@ -531,9 +572,9 @@ test('8. disambiguation never exposes owner data, even though the mocked identif
 test('9. existing inland coverage cases (single bbox match each) remain unaffected by the overlap-disambiguation logic', async () => {
   const { call } = installParcels(fullUpstream().impl);
   assert.deepEqual(json(await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`)), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
-  const ncUpstream = fakeFetch([]);
+  const ncUpstream = fakeFetch([[NC_LAYER_URL, okJson({ features: [NC_FEATURE_WITH_OWNER_FIELDS] })]]);
   assert.deepEqual(json(await installParcels(ncUpstream.impl).call(`/coverage?lat=${NC_LAT}&lon=${NC_LON}`)), { region: 'nc-statewide', providerId: 'north-carolina-onemap', sourceAgency: ncConfig.sourceAgency });
-  const vaUpstream = fakeFetch([]);
+  const vaUpstream = fakeFetch([[VA_LAYER_URL, okJson({ features: [VA_FEATURE_WITH_OWNER_FIELDS] })]]);
   assert.deepEqual(json(await installParcels(vaUpstream.impl).call(`/coverage?lat=${VA_LAT}&lon=${VA_LON}`)), { region: 'va-statewide', providerId: 'virginia-statewide', sourceAgency: vaConfig.sourceAgency });
 });
 
@@ -721,6 +762,103 @@ test('GA: a point the boundary service resolves to an unsupported county reports
 });
 
 test('GA/SC coverage overlap (none expected, but exercised anyway): existing OR/NC/VA/TN/SC coverage resolution is unaffected by adding GA', async () => {
+  const { call } = installParcels(fullUpstream().impl);
+  assert.deepEqual(json(await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`)), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
+});
+
+// -- Oregon statewide coverage expansion: coverage + viewport through the SAME generic route -------
+
+const orConfig = getParcelProviderConfig('or-statewide');
+const OR_BOUNDARY_URL = `${orConfig.countyBoundaryUrl}/query`;
+const OR_MARION_LAYER_URL = `${orConfig.counties.MARION.featureServerUrl}/2/query`;
+
+// A point/bbox inside Marion County, OR — confirmed live during research.
+const OR_MARION_LAT = 45.284;
+const OR_MARION_LON = -122.964;
+const OR_MARION_BBOX = { south: 45.278, west: -122.97, north: 45.29, east: -122.96 };
+
+const OR_MARION_BOUNDARY_FEATURE = { attributes: { COUNTY: 'Marion' } };
+const OR_MARION_PARCEL_FEATURE = {
+  attributes: { OBJECTID: 1, ORTaxlot: '2403.00S02.00W2900--000000400', MapTaxlot: '032W290000400', TaxlotAcre: 166.6 },
+  geometry: { rings: [[[OR_MARION_BBOX.west, OR_MARION_BBOX.south], [OR_MARION_BBOX.east, OR_MARION_BBOX.south], [OR_MARION_BBOX.east, OR_MARION_BBOX.north], [OR_MARION_BBOX.west, OR_MARION_BBOX.north], [OR_MARION_BBOX.west, OR_MARION_BBOX.south]]] },
+};
+
+test('OR: /coverage for a point inside Marion County resolves or-statewide via the real county-boundary service', async () => {
+  const upstream = fakeFetch([
+    [OR_BOUNDARY_URL, okJson({ features: [OR_MARION_BOUNDARY_FEATURE] })],
+    [OR_MARION_LAYER_URL, okJson({ features: [OR_MARION_PARCEL_FEATURE] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${OR_MARION_LAT}&lon=${OR_MARION_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: 'or-statewide', providerId: 'oregon-statewide-county-parcels', sourceAgency: orConfig.sourceAgency });
+});
+
+test('OR: /viewport for Marion County returns real geometry via the SAME generic route, outSR=4326, no owner data', async () => {
+  const upstream = fakeFetch([[OR_MARION_LAYER_URL, okJson({ features: [OR_MARION_PARCEL_FEATURE], exceededTransferLimit: false })]]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/viewport?region=or-statewide&south=${OR_MARION_BBOX.south}&west=${OR_MARION_BBOX.west}&north=${OR_MARION_BBOX.north}&east=${OR_MARION_BBOX.east}`);
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.region, 'or-statewide');
+  assert.equal(body.providerId, 'oregon-statewide-county-parcels');
+  assert.equal(body.count, 1);
+  assert.equal(body.parcels[0].parcelId, 'MARION:2403.00S02.00W2900--000000400');
+  assert.equal(body.parcels[0].geometry.type, 'Polygon');
+  assert.ok(upstream.calls[0].includes('outSR=4326'));
+  assert.doesNotMatch(res.body, /owner/i, 'no owner key anywhere in the viewport response body');
+});
+
+test('OR: a point the boundary service resolves to DESCHUTES never resolves or-statewide — or-deschutes remains the sole winner (real disambiguation, not a tie-break)', async () => {
+  const upstream = fakeFetch([
+    [OR_BOUNDARY_URL, okJson({ features: [{ attributes: { COUNTY: 'Deschutes' } }] })],
+    [TAXLOT_URL, okJson({ features: [taxlotFeature('1408000000200')] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
+});
+
+test('OR: a point the boundary service resolves to an unsupported county reports no coverage, never a fake match', async () => {
+  // /coverage's single-bbox-match path now confirms via identify instead
+  // of trusting the (deliberately coarse, Oregon-spanning) bbox alone —
+  // this is the exact scenario the coverage-route hardening fixes: a
+  // point inside or-statewide's bbox but NOT inside any actually
+  // supported county.
+  const upstream = fakeFetch([
+    [OR_BOUNDARY_URL, okJson({ features: [{ attributes: { COUNTY: 'Lincoln' } }] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call('/coverage?lat=44.6&lon=-124.0');
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: null });
+});
+
+test('OR: a repeated /coverage call for the same single-candidate point reuses the identify cache — no duplicate upstream request', async () => {
+  const upstream = fakeFetch([
+    [OR_BOUNDARY_URL, okJson({ features: [OR_MARION_BOUNDARY_FEATURE] })],
+    [OR_MARION_LAYER_URL, okJson({ features: [OR_MARION_PARCEL_FEATURE] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const first = await call(`/coverage?lat=${OR_MARION_LAT}&lon=${OR_MARION_LON}`);
+  const callsAfterFirst = upstream.calls.length;
+  const second = await call(`/coverage?lat=${OR_MARION_LAT}&lon=${OR_MARION_LON}`);
+  assert.deepEqual(json(first), json(second));
+  assert.equal(upstream.calls.length, callsAfterFirst, 'the second /coverage call for the same point must hit the identify cache, not upstream again');
+});
+
+test('OR: /identify for that same unsupported-county point also reports no parcel — the fix makes /coverage and /identify agree', async () => {
+  const upstream = fakeFetch([
+    [OR_BOUNDARY_URL, okJson({ features: [{ attributes: { COUNTY: 'Lincoln' } }] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call('/identify?region=or-statewide&lat=44.6&lon=-124.0');
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { parcel: null });
+});
+
+test('15 (OR statewide coverage expansion): existing OR-Deschutes/NC/VA/TN/SC/GA coverage resolution is unaffected by adding or-statewide', async () => {
   const { call } = installParcels(fullUpstream().impl);
   assert.deepEqual(json(await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`)), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
 });
