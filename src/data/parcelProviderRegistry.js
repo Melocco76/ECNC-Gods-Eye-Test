@@ -21,6 +21,7 @@ import { createOregonDeschutesProvider } from './parcelProviders/oregonDeschutes
 import { createNorthCarolinaOneMapProvider } from './parcelProviders/northCarolinaOneMap.js';
 import { createVirginiaStatewideProvider } from './parcelProviders/virginiaStatewide.js';
 import { createTennesseeStatewideProvider } from './parcelProviders/tennesseeStatewide.js';
+import { createSouthCarolinaCountyParcelsProvider } from './parcelProviders/southCarolinaCountyParcels.js';
 
 /** Deschutes County, Oregon coverage bbox — padded from the service's own
  *  published extent ([-122.00124, 43.61111] to [-119.89659, 44.39349]).
@@ -110,6 +111,37 @@ const TN_COVERAGE_BBOX = Object.freeze({ west: -90.4, south: 34.9, east: -81.6, 
  * provider's own fallback.
  */
 const TN_PARCEL_ID_PATTERN = /^(?:tn-oid-\d+|[A-Za-z0-9][A-Za-z0-9/.\- ]{0,49})$/;
+
+/**
+ * South Carolina has no free/public statewide parcel polygon service —
+ * SCDOT's `SC_Parcels` MapServer aggregates one layer per county but
+ * returns `499 Token Required` on every endpoint (root, layer metadata,
+ * `/query`), confirmed live during this phase's research. Coverage is
+ * built county-by-county instead; see `southCarolinaCountyParcels.js`'s
+ * module docstring for the full discovery/rejection record.
+ */
+
+/** SC's own statewide county-BOUNDARY polygon layer (SC Geodetic Survey /
+ *  RFA_Administrator) — confirmed live to resolve a point to its county
+ *  name (e.g. a York County point returns `"YORK"`, a Horry County point
+ *  returns `"HORRY"`). Used by `southCarolinaCountyParcels.js` for Part 4's
+ *  real county resolution — never a bbox guess. */
+const SC_COUNTY_BOUNDARY_URL = 'https://services7.arcgis.com/jvnMUuMgsYQL9cN6/arcgis/rest/services/SC_County_Boundary/FeatureServer/0';
+const SC_COUNTY_BOUNDARY_NAME_FIELD = 'County';
+
+/** Coarse union pre-filter spanning both supported counties (York ~
+ *  34.7-35.25°N/-81.4- -80.7°W, Horry ~ 33.3-34.15°N/-79.4- -78.5°W),
+ *  padded. Deliberately coarse — the same "is this plausibly within reach"
+ *  role every other provider's `coverageBbox` plays. The real per-point and
+ *  per-viewport county decisions are made elsewhere (see
+ *  `southCarolinaCountyParcels.js`), never by this rectangle. */
+const SC_COVERAGE_BBOX = Object.freeze({ west: -81.4, south: 33.3, east: -78.5, north: 35.25 });
+
+/** Every id this provider returns is namespaced `"<COUNTY>:<rawId>"` (see
+ *  `southCarolinaCountyParcels.js`) because York's and Horry's own raw id
+ *  formats could otherwise collide — this pattern is namespace-aware, not
+ *  a plain per-county id format. */
+const SC_PARCEL_ID_PATTERN = /^(?:YORK|HORRY):(?:sc-oid-\d+|[A-Za-z0-9][A-Za-z0-9/.\-]{0,39})$/;
 
 export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
   'or-deschutes': Object.freeze({
@@ -278,6 +310,86 @@ export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
     }),
     search: Object.freeze({ minLength: 3, maxLength: 80, resultCap: 15 }),
     factory: createTennesseeStatewideProvider,
+  }),
+
+  'sc-counties': Object.freeze({
+    region: 'sc-counties',
+    providerId: 'south-carolina-county-parcels',
+    state: 'SC',
+    county: null, // multi-county — resolved per-request via the county-boundary service; see docstring above
+    sourceAgency: 'South Carolina county GIS departments (per-county; see each county config)',
+    countyBoundaryUrl: SC_COUNTY_BOUNDARY_URL,
+    countyBoundaryNameField: SC_COUNTY_BOUNDARY_NAME_FIELD,
+    coverageBbox: SC_COVERAGE_BBOX,
+    parcelIdPattern: SC_PARCEL_ID_PATTERN,
+    // Per-county schemas confirmed live this phase — field names verified
+    // against each service's own `?f=json` metadata, then a live `/query`
+    // with the exact intended outFields list (never guessed). Owner/mailing
+    // fields exist upstream for both counties but are DELIBERATELY not
+    // mapped anywhere in this config — see `southCarolinaCountyParcels.js`
+    // and its privacy tests.
+    counties: Object.freeze({
+      YORK: Object.freeze({
+        sourceAgency: 'York County, SC GIS/Assessor',
+        featureServerUrl: 'https://services1.arcgis.com/2AGLxyiJoNiVHKwq/arcgis/rest/services/Parcels/FeatureServer',
+        bbox: Object.freeze({ west: -81.4, south: 34.7, east: -80.7, north: 35.25 }),
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'ParcelID',
+            altIdField: 'TAXMAPID',
+            objectIdField: 'OBJECTID',
+            addressField: 'PropertyAddress',
+            acreageField: 'GISSizeAC',
+            shapeAreaField: null, // acreage already comes from GISSizeAC — no computed-acreage fallback needed
+            landUseField: 'LandUseDesc',
+            zoningField: null, // no zoning field in this schema
+            landValueField: 'AprLandVal',
+            improvementValueField: 'AprBldgVal',
+            marketValueField: 'AprTotVal',
+            assessedValueField: 'AsdTotVal',
+            taxableValueField: 'TaxTotVal',
+            yearBuiltField: 'YearBuilt',
+            buildingAreaField: 'FinishedSQFT',
+          }),
+        }),
+      }),
+      HORRY: Object.freeze({
+        sourceAgency: 'Horry County, SC GIS/Assessor',
+        featureServerUrl: 'https://services.arcgis.com/NuWFvHYDMVmmxMeM/arcgis/rest/services/HorryCountySCParcels/FeatureServer',
+        bbox: Object.freeze({ west: -79.4, south: 33.3, east: -78.5, north: 34.15 }),
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'PARNO',
+            altIdField: null,
+            objectIdField: 'OBJECTID',
+            addressField: null, // this schema has no address field at all — confirmed live
+            acreageField: null, // no assessor-supplied acreage field — computed from shapeAreaField instead
+            shapeAreaField: 'Shape__Area', // State-Plane SQUARE FEET — converted to sq-m before the shared computed-acreage fallback, see provider module
+            landUseField: null,
+            zoningField: null,
+            landValueField: 'LANDVAL',
+            improvementValueField: 'IMPROVVAL',
+            marketValueField: 'PARVAL',
+            assessedValueField: null,
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+          }),
+        }),
+      }),
+    }),
+    // Reflects the UNION of what's possible across supported counties — an
+    // individual county may still return null for a field its own schema
+    // lacks (e.g. Horry has no address/land-use fields); Part 8's "missing
+    // data simply omits the row" rule covers that, not a capabilities flag.
+    capabilities: Object.freeze({
+      search: true, identify: true, geometry: true, values: true, improvements: true, zoning: false, owner: false,
+      taxable: true, landUse: true, effectiveDate: false,
+    }),
+    search: Object.freeze({ minLength: 3, maxLength: 80, resultCap: 15 }),
+    factory: createSouthCarolinaCountyParcelsProvider,
   }),
 });
 

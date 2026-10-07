@@ -590,3 +590,79 @@ test('/identify, /detail, /geometry, /search still work exactly as before, with 
   assert.equal(search.statusCode, 200);
   assert.doesNotMatch(search.body, /"owner"/);
 });
+
+// -- South Carolina coverage expansion: coverage + viewport through the SAME generic route -------
+
+const scConfig = getParcelProviderConfig('sc-counties');
+const SC_BOUNDARY_URL = `${scConfig.countyBoundaryUrl}/query`;
+const SC_YORK_LAYER_URL = `${scConfig.counties.YORK.featureServerUrl}/0/query`;
+const SC_HORRY_LAYER_URL = `${scConfig.counties.HORRY.featureServerUrl}/0/query`;
+
+// A point/bbox inside York County, SC — confirmed live during research.
+const SC_YORK_LAT = 34.9618;
+const SC_YORK_LON = -81.0824;
+const SC_YORK_BBOX = { south: 34.955, west: -81.09, north: 34.97, east: -81.07 };
+
+const SC_YORK_BOUNDARY_FEATURE = { attributes: { County: 'YORK' } };
+const SC_YORK_PARCEL_FEATURE = {
+  attributes: {
+    OBJECTID: 1, ParcelID: '5400000013', TAXMAPID: '5400000013',
+    Owner1: 'EXAMPLE OWNER', MailAddr1: '456 MAIL ST', MailCity: 'ROCK HILL',
+    PropertyAddress: '930 HOLLIS LAKES RD', LandUseDesc: 'RESIDENTIAL IMPROVED OC',
+    GISSizeAC: 2.89, AprLandVal: 50000, AprBldgVal: 206900, AprTotVal: 256900,
+  },
+  geometry: { rings: [[[SC_YORK_BBOX.west, SC_YORK_BBOX.south], [SC_YORK_BBOX.east, SC_YORK_BBOX.south], [SC_YORK_BBOX.east, SC_YORK_BBOX.north], [SC_YORK_BBOX.west, SC_YORK_BBOX.north], [SC_YORK_BBOX.west, SC_YORK_BBOX.south]]] },
+};
+
+test('SC: /coverage for a point inside York County resolves sc-counties via the real county-boundary service', async () => {
+  const upstream = fakeFetch([
+    [SC_BOUNDARY_URL, okJson({ features: [SC_YORK_BOUNDARY_FEATURE] })],
+    [SC_YORK_LAYER_URL, okJson({ features: [SC_YORK_PARCEL_FEATURE] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${SC_YORK_LAT}&lon=${SC_YORK_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: 'sc-counties', providerId: 'south-carolina-county-parcels', sourceAgency: scConfig.sourceAgency });
+});
+
+test('SC: /viewport for York County returns real geometry via the SAME generic route, outSR=4326, no owner data', async () => {
+  const upstream = fakeFetch([[SC_YORK_LAYER_URL, okJson({ features: [SC_YORK_PARCEL_FEATURE], exceededTransferLimit: false })]]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/viewport?region=sc-counties&south=${SC_YORK_BBOX.south}&west=${SC_YORK_BBOX.west}&north=${SC_YORK_BBOX.north}&east=${SC_YORK_BBOX.east}`);
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.region, 'sc-counties');
+  assert.equal(body.providerId, 'south-carolina-county-parcels');
+  assert.equal(body.count, 1);
+  assert.equal(body.parcels[0].parcelId, 'YORK:5400000013');
+  assert.equal(body.parcels[0].geometry.type, 'Polygon');
+  assert.ok(upstream.calls[0].includes('outSR=4326'));
+  assert.doesNotMatch(res.body, /owner/i, 'no owner key anywhere in the viewport response body');
+});
+
+test('SC: a point the boundary service resolves to an unsupported county reports no coverage, never a fake match', async () => {
+  const upstream = fakeFetch([
+    [SC_BOUNDARY_URL, okJson({ features: [{ attributes: { County: 'RICHLAND' } }] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call('/coverage?lat=34.0&lon=-80.9');
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: null });
+});
+
+test('SC/NC coverage overlap: only SC identify confirms a parcel => sc-counties, via the SAME existing multi-candidate disambiguation (no SC-specific route code)', async () => {
+  const upstream = fakeFetch([
+    [SC_BOUNDARY_URL, okJson({ features: [SC_YORK_BOUNDARY_FEATURE] })],
+    [SC_YORK_LAYER_URL, okJson({ features: [SC_YORK_PARCEL_FEATURE], exceededTransferLimit: false })],
+    [NC_LAYER_URL, noFeatures],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${SC_YORK_LAT}&lon=${SC_YORK_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: 'sc-counties', providerId: 'south-carolina-county-parcels', sourceAgency: scConfig.sourceAgency });
+});
+
+test('13 (SC coverage expansion): existing OR/NC/VA/TN coverage resolution is unaffected by adding SC', async () => {
+  const { call } = installParcels(fullUpstream().impl);
+  assert.deepEqual(json(await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`)), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
+});

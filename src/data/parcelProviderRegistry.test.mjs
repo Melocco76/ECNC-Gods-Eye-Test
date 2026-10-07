@@ -64,6 +64,42 @@ test('3. tn-statewide is registered with the exact confirmed FeatureServer, laye
   assert.match(config.sourceAgency, /Tennessee Comptroller/i);
 });
 
+// -- South Carolina coverage expansion -----------------------------------------------------------
+
+test('4. sc-counties is registered with the exact confirmed county-boundary service and per-county field mappings', () => {
+  const config = getParcelProviderConfig('sc-counties');
+  assert.ok(config);
+  assert.equal(config.state, 'SC');
+  assert.equal(config.countyBoundaryUrl, 'https://services7.arcgis.com/jvnMUuMgsYQL9cN6/arcgis/rest/services/SC_County_Boundary/FeatureServer/0');
+  assert.equal(config.countyBoundaryNameField, 'County');
+  assert.deepEqual(Object.keys(config.counties), ['YORK', 'HORRY']);
+  assert.equal(config.counties.YORK.layers.parcels.idField, 'ParcelID', 'confirmed live against the York FeatureServer');
+  assert.equal(config.counties.YORK.layers.parcels.id, 0);
+  assert.equal(config.counties.HORRY.layers.parcels.idField, 'PARNO', 'confirmed live against the Horry FeatureServer');
+  assert.equal(config.counties.HORRY.layers.parcels.addressField, null, 'confirmed live: Horry has no address field at all');
+  assert.match(config.sourceAgency, /South Carolina/i);
+});
+
+test('5. sc-counties never maps an owner/mailing field for either supported county', () => {
+  const config = getParcelProviderConfig('sc-counties');
+  const forbidden = /owner|mail/i;
+  for (const countyKey of Object.keys(config.counties)) {
+    for (const [fieldKey, fieldName] of Object.entries(config.counties[countyKey].layers.parcels)) {
+      if (typeof fieldName !== 'string') continue;
+      assert.equal(forbidden.test(fieldName), false, `${countyKey}.${fieldKey} = ${fieldName}`);
+    }
+  }
+});
+
+test('6. the sc-counties parcel id pattern only accepts the YORK:/HORRY: namespaced form', () => {
+  const config = getParcelProviderConfig('sc-counties');
+  assert.equal(config.parcelIdPattern.test('YORK:5400000013'), true);
+  assert.equal(config.parcelIdPattern.test('HORRY:30413010131'), true);
+  assert.equal(config.parcelIdPattern.test('YORK:sc-oid-42'), true);
+  assert.equal(config.parcelIdPattern.test('5400000013'), false, 'a raw id with no county prefix must never match');
+  assert.equal(config.parcelIdPattern.test('RICHLAND:1'), false, 'an unsupported county prefix must never match');
+});
+
 test('an unknown region resolves to null everywhere — never a default/fallback provider', () => {
   assert.equal(getParcelProviderConfig('nc-forsyth'), null, 'per-county NC id not built — this provider is statewide');
   assert.equal(getParcelProviderConfig(''), null);
@@ -76,7 +112,7 @@ test('an unknown region resolves to null everywhere — never a default/fallback
 
 test('listParcelRegions reflects exactly the compiled-in registry keys', () => {
   assert.deepEqual(listParcelRegions(), Object.keys(PARCEL_PROVIDER_REGISTRY));
-  assert.deepEqual(listParcelRegions(), ['or-deschutes', 'nc-statewide', 'va-statewide', 'tn-statewide']);
+  assert.deepEqual(listParcelRegions(), ['or-deschutes', 'nc-statewide', 'va-statewide', 'tn-statewide', 'sc-counties']);
 });
 
 test('resolving any known region returns a usable provider object with the five required operations — no region-specific special-casing in the resolver', () => {

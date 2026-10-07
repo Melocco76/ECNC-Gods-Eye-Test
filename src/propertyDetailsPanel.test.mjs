@@ -132,6 +132,29 @@ const TN_LIKE_PARCEL = {
   officialLinks: [],
 };
 
+const SC_HORRY_LIKE_PARCEL = {
+  providerId: 'south-carolina-county-parcels', sourceAgency: 'Horry County, SC GIS/Assessor',
+  sourceUrl: 'https://services.arcgis.com/NuWFvHYDMVmmxMeM/arcgis/rest/services/HorryCountySCParcels/FeatureServer', retrievedAt: '2026-10-07T12:00:00.000Z', effectiveDate: null,
+  parcelId: 'HORRY:30413010131', taxLot: '30413010131', accountId: null,
+  address: { full: null, city: null, state: 'SC', zip: null },
+  acreage: 2.097, acreageSource: 'computed',
+  values: { assessed: null, taxable: null, market: 98600, land: 0, improvements: 98600 },
+  landUse: null, zoning: null,
+  improvements: { yearBuilt: null, buildingArea: null, garageArea: null, bedrooms: null, bathrooms: null },
+  geometry: { type: 'Polygon', coordinates: [[[0, 0], [0, 1], [1, 1], [0, 0]]] },
+  officialLinks: [],
+};
+
+test('16 (SC coverage expansion): a sparse-schema SC county (Horry — no address/land-use fields) omits those rows/sections without any SC-specific code', () => {
+  const model = buildPropertyDetailModel(SC_HORRY_LIKE_PARCEL);
+  const sectionIds = model.sections.map((s) => s.id);
+  assert.deepEqual(sectionIds, ['overview', 'values', 'source'], 'Property/Improvements sections omitted entirely — nothing to show');
+  const overview = model.sections.find((s) => s.id === 'overview');
+  assert.deepEqual(overview.rows.map((r) => r.label), ['Parcel ID', 'Address', 'Acreage'], 'Address row still appears with just the fixed "SC" literal — no street/city for this county');
+  const values = model.sections.find((s) => s.id === 'values');
+  assert.ok(values.rows.some((r) => r.label === 'Market / Parcel Value'));
+});
+
 test('9. OR detail model renders Overview/Property/Values/Improvements/Source — the richest provider', () => {
   const model = buildPropertyDetailModel(OR_LIKE_PARCEL);
   const sectionIds = model.sections.map((s) => s.id);
@@ -216,12 +239,19 @@ test('20. no owner-search affordance exists anywhere in this module\'s source', 
 
 test('21. the generic model builder never branches on providerId/state — same function for every provider', () => {
   const source = code('./propertyDetailsPanel.js');
-  assert.equal(/providerId\s*===|state\s*===\s*'(OR|NC|VA|TN)'|'(oregon|north-carolina|virginia|tennessee)/i.test(source), false);
+  assert.equal(/providerId\s*===|state\s*===\s*'(OR|NC|VA|TN|SC)'|'(oregon|north-carolina|virginia|tennessee|south-carolina)/i.test(source), false);
 });
 
 test('14 (TN coverage expansion): no Tennessee-specific branching anywhere in this module either', () => {
   const source = code('./propertyDetailsPanel.js');
   for (const needle of ['tn-statewide', 'tennessee', 'geoviewer', 'gislink', 'comptroller']) {
+    assert.equal(new RegExp(needle, 'i').test(source), false, needle);
+  }
+});
+
+test('15 (SC coverage expansion): no South-Carolina-specific branching anywhere in this module either', () => {
+  const source = code('./propertyDetailsPanel.js');
+  for (const needle of ['sc-counties', 'south-carolina', 'south carolina', 'york', 'horry', 'parno']) {
     assert.equal(new RegExp(needle, 'i').test(source), false, needle);
   }
 });
