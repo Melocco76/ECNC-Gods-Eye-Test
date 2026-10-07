@@ -169,6 +169,8 @@ export function createOregonDeschutesProvider({
       assessedValue: rollValues?.[rollValuesLayer.assessedField],
       taxableValue: null, // not distinguished from assessed value by this provider
       marketValue: rollValues?.[rollValuesLayer.marketField],
+      landValue: rollValues?.[rollValuesLayer.landField],
+      improvementValue: rollValues?.[rollValuesLayer.improvementsField],
 
       landUse: null, // this provider does not expose land use distinct from zoning
       zoning,

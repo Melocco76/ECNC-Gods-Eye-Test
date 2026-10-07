@@ -35,6 +35,7 @@ import {
 } from './celestialRing.js';
 import { destroyTrackedReadout, initTrackedReadout } from './data/trackedReadout.js';
 import { destroyWorldOverlay, initWorldOverlay } from './overlays/worldOverlay.js';
+import { destroyPropertyDetailsPanel, initPropertyDetailsPanel } from './propertyDetailsPanel.js';
 import {
   destroyDetection,
   initDetection,
@@ -2688,6 +2689,7 @@ export class StyleManager {
       this._updateDetectionButton(modeLabel);
     });
     initTrackedReadout(viewer);
+    initPropertyDetailsPanel();
     setDetectionStyle(this.activeStyle);
     this._applyDetectionDensityFromUi();
 
@@ -10420,6 +10422,7 @@ export class StyleManager {
       this._radioSelectedHandler = null;
     }
     destroyTrackedReadout();
+    destroyPropertyDetailsPanel();
     destroyDetection();
     destroyWorldOverlay();
     // Clear transitions

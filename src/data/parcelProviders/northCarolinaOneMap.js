@@ -133,7 +133,9 @@ export function createNorthCarolinaOneMapProvider({
 
       assessedValue: null, // not distinguished from market value by this provider
       taxableValue: null,
-      marketValue: attrs[layer.marketValueField],
+      marketValue: attrs[layer.marketValueField], // NC calls this "Parcel Value" (parval) — not necessarily a true market value; the UI must label it accordingly, never overstate it as "Market Value"
+      landValue: attrs[layer.landValueField],
+      improvementValue: attrs[layer.improvedValueField],
 
       landUse: attrs[layer.landUseField],
       zoning: undefined, // no zoning layer for this statewide provider

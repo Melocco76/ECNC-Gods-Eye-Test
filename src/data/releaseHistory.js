@@ -32,9 +32,44 @@ import { APP_VERSION } from './appVersion.js';
 export const RELEASES = [
   {
     version: APP_VERSION,
-    date: '2026-10-06',
+    date: '2026-10-07',
     status: 'Production / Live',
     isLatest: true,
+    summary: 'Property Details: click a Property Boundaries parcel to select and highlight '
+      + 'it, then see its address, acreage, values, and improvements in a new right-rail '
+      + 'panel — normalized across Oregon, North Carolina, and Virginia, with official '
+      + 'record links where a provider supplies one and owner data kept out entirely.',
+    sections: [
+      {
+        id: 'added',
+        label: 'Added',
+        items: [
+          'Clickable, selectable Property Boundaries — selecting a parcel highlights it in place on the map.',
+          'A new Property Details right-rail panel, opened by selecting a parcel.',
+          'Normalized property detail display (address, acreage, values, improvements) across Oregon, North Carolina, and Virginia.',
+          'Official property-record links in the panel where a provider supplies one (e.g. Deschutes County\'s DIAL record).',
+          'Statewide North Carolina parcel provider (NC OneMap).',
+          'Statewide Virginia parcel provider (Virginia Geographic Information Network).',
+        ],
+      },
+      {
+        id: 'improved',
+        label: 'Improved',
+        items: [
+          'Deterministic parcel geometry identity, so a selected parcel keeps its highlight correctly across a viewport refresh.',
+          'North Carolina/Virginia coverage resolution near their shared border, confirmed against the actual parcel data rather than provider order.',
+          'Parcel privacy protections, with regression coverage that fails if an owner field ever reaches the property panel.',
+          'Provider-neutral property detail normalization, so the panel never needs provider-specific display logic.',
+          'Property Details panel layout on narrow/mobile screens.',
+        ],
+      },
+    ],
+  },
+  {
+    version: '0.2.0',
+    date: '2026-10-06',
+    status: 'Production / Live',
+    isLatest: false,
     summary: "The ECNC fork's first formal, independently-versioned release — "
       + 'Property Intelligence (coverage lookup, bounded viewport search, and a '
       + 'visible map layer), a centralized app version, and a round of '

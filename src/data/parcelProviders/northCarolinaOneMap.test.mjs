@@ -178,6 +178,8 @@ test('15b. the normalized parcel carries the safe, non-owner fields confirmed li
   assert.equal(parcel.acreage, 20.87671745);
   assert.equal(parcel.acreageSource, 'assessor');
   assert.equal(parcel.values.market, 220000);
+  assert.equal(parcel.values.land, 95000, 'A3: landval normalizes into values.land');
+  assert.equal(parcel.values.improvements, 125000, 'A3: improvval normalizes into values.improvements');
   assert.equal(parcel.landUse, 'Agricultural');
   assert.equal(parcel.geometry.type, 'Polygon');
   assert.equal(parcel.sourceAgency, config.sourceAgency);

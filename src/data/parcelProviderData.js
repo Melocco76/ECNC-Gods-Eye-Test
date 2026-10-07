@@ -195,7 +195,7 @@ export function buildNormalizedParcel({
   addressFull, city, state, zip,
   acreageAssessor, shapeAreaSqM,
   ownerName,
-  assessedValue, taxableValue = null, marketValue,
+  assessedValue, taxableValue = null, marketValue, landValue = null, improvementValue = null,
   landUse = null, zoning,
   yearBuilt, buildingArea, garageArea, bedrooms, bathrooms,
   geometry = null,
@@ -235,6 +235,8 @@ export function buildNormalizedParcel({
       assessed: num(assessedValue),
       taxable: num(taxableValue),
       market: num(marketValue),
+      land: num(landValue),
+      improvements: num(improvementValue),
     },
 
     landUse: text(landUse),

@@ -18,7 +18,13 @@ test('the current (newest) release reuses APP_VERSION — it is never a second, 
   assert.equal(RELEASES[0].version, APP_VERSION);
   const source = code('./releaseHistory.js');
   assert.match(source, /import \{ APP_VERSION \} from '\.\/appVersion\.js';/);
-  assert.equal(/version:\s*'[\d.]+'/.test(source), false, 'the current entry\'s version is never a literal string');
+  // Only the FIRST `version:` field (the current/latest entry) must read
+  // APP_VERSION — once a release is superseded it is expected to carry its
+  // own fixed, literal version string going forward (see the module
+  // docstring), so a later entry's literal is not itself a violation.
+  const firstVersionField = /version:\s*([^,\n]+),/.exec(source);
+  assert.ok(firstVersionField, 'a version: field exists');
+  assert.equal(firstVersionField[1].trim(), 'APP_VERSION', 'the first (current/latest) release\'s version is never a literal string');
 });
 
 test('exactly one release is marked latest, and it is the newest (index 0)', () => {
@@ -27,12 +33,24 @@ test('exactly one release is marked latest, and it is the newest (index 0)', () 
   assert.equal(RELEASES[0].isLatest, true);
 });
 
-test('the v0.2.0 release has the expected date, status, and a real summary', () => {
+test('the v0.3.0 release has the expected date, status, and a real summary', () => {
   const latest = getLatestRelease();
-  assert.equal(latest.date, '2026-10-06');
+  assert.equal(latest.date, '2026-10-07');
   assert.equal(latest.status, 'Production / Live');
   assert.equal(typeof latest.summary, 'string');
   assert.ok(latest.summary.length > 40);
+});
+
+test('v0.2.0 is preserved as historical release information, no longer latest, with its own fixed version string', () => {
+  const previous = RELEASES.find((release) => release.version === '0.2.0');
+  assert.ok(previous, '0.2.0 entry still present');
+  assert.equal(previous.isLatest, false);
+  assert.equal(previous.date, '2026-10-06');
+  assert.notEqual(previous, getLatestRelease());
+});
+
+test('releases are ordered newest-first: v0.3.0 then v0.2.0', () => {
+  assert.deepEqual(RELEASES.map((release) => release.version), [APP_VERSION, '0.2.0']);
 });
 
 test('every release carries structured, non-empty sections with real items (nothing is a placeholder)', () => {
@@ -47,21 +65,31 @@ test('every release carries structured, non-empty sections with real items (noth
   }
 });
 
-test('the v0.2.0 release names the confirmed Property Boundaries work and the real duplicate-parcel-id fix, nothing invented', () => {
-  const latest = getLatestRelease();
-  const allItems = latest.sections.flatMap((section) => section.items).join(' \n ');
+test('the historical v0.2.0 release names the confirmed Property Boundaries work and the real duplicate-parcel-id fix, nothing invented', () => {
+  const previous = RELEASES.find((release) => release.version === '0.2.0');
+  const allItems = previous.sections.flatMap((section) => section.items).join(' \n ');
   assert.match(allItems, /Property Boundaries/i);
   assert.match(allItems, /parcel/i);
-  const fixed = latest.sections.find((section) => section.id === 'fixed');
+  const fixed = previous.sections.find((section) => section.id === 'fixed');
   assert.ok(fixed, 'has a Fixed section');
   assert.match(fixed.items.join(' '), /same parcel|duplicate|collision/i);
 });
 
-test('Known/Deferred only repeats an already-documented deferral (parcel click/detail for a later phase) — nothing invented', () => {
-  const latest = getLatestRelease();
-  const known = latest.sections.find((section) => section.id === 'known');
+test('historical Known/Deferred only repeats an already-documented deferral (parcel click/detail for a later phase) — nothing invented', () => {
+  const previous = RELEASES.find((release) => release.version === '0.2.0');
+  const known = previous.sections.find((section) => section.id === 'known');
   assert.ok(known);
   assert.match(known.items.join(' '), /later Property Intelligence phase|click.*parcel|parcel.*click/i);
+});
+
+test('the v0.3.0 release names Property Details, parcel selection/highlighting, and the NC/VA providers — nothing invented, no owner claim', () => {
+  const latest = getLatestRelease();
+  const allItems = latest.sections.flatMap((section) => section.items).join(' \n ');
+  assert.match(allItems, /Property Details/i);
+  assert.match(allItems, /select|highlight/i);
+  assert.match(allItems, /North Carolina/i);
+  assert.match(allItems, /Virginia/i);
+  assert.equal(/owner (lookup|search)/i.test(allItems), false, 'A3 never shipped owner lookup/search — the release notes must not claim it');
 });
 
 test('this module never references AIS or Flight Intelligence internals — it is release-note text only', () => {

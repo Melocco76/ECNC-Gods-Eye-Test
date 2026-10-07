@@ -79,6 +79,8 @@ test('identifyParcel assembles every confirmed field from the related tables', a
   assert.equal(parcel.values.assessed, 412340);
   assert.equal(parcel.values.market, 498200);
   assert.equal(parcel.values.taxable, null);
+  assert.equal(parcel.values.land, 220000, 'A3: RMV_Land now normalizes into values.land');
+  assert.equal(parcel.values.improvements, 278200, 'A3: RMV_Impr now normalizes into values.improvements');
   assert.equal(parcel.zoning, 'RR10');
   assert.equal(parcel.improvements.yearBuilt, 1998);
   assert.equal(parcel.improvements.buildingArea, 2140);

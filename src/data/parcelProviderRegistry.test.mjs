@@ -22,6 +22,8 @@ test('or-deschutes is registered with the exact confirmed FeatureServer and laye
   assert.equal(config.layers.improvements.id, 3);
   assert.equal(config.layers.owners.id, 5);
   assert.equal(config.layers.rollValues.id, 7);
+  assert.equal(config.layers.rollValues.landField, 'RMV_Land', 'A3: Property Details Values section needs a distinct land value');
+  assert.equal(config.layers.rollValues.improvementsField, 'RMV_Impr', 'A3: Property Details Values section needs a distinct improvement value');
   assert.equal(config.zoning.serviceUrl, 'https://maps.deschutes.org/arcgis/rest/services/OpenData/LandFD/MapServer/3');
   assert.equal(config.sourceAgency, "Deschutes County Assessor's Office");
 });

@@ -100,7 +100,11 @@ export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
       assessorAccount: Object.freeze({ id: 1, joinField: 'TaxLot', addressField: 'Address', streetNameField: 'Street_Name', cityField: 'City', stateField: 'State', zipField: 'Zip' }),
       improvements: Object.freeze({ id: 3, joinField: 'Taxlot', acreageField: 'Land_Size_Acres', yearBuiltField: 'Year_Built_1', buildingAreaField: 'Total_Sqft_1', garageAreaField: 'Garage_Sqft_1', bedroomsField: 'Bedrooms', bathroomsField: 'Bathrooms' }),
       owners: Object.freeze({ id: 5, joinField: 'MAP_TAXLOT', nameField: 'NAME' }),
-      rollValues: Object.freeze({ id: 7, joinField: 'Taxlot', assessedField: 'AV_Total', marketField: 'RMV_Total' }),
+      // RMV_Land/RMV_Impr confirmed live on this table during Phase A planning
+      // research (same response that supplied RMV_Total/AV_Total) — not
+      // mapped into the normalized output until A3's Property Details panel
+      // needed a distinct land/improvement value breakdown.
+      rollValues: Object.freeze({ id: 7, joinField: 'Taxlot', assessedField: 'AV_Total', marketField: 'RMV_Total', landField: 'RMV_Land', improvementsField: 'RMV_Impr' }),
     }),
     // Separate MapServer layer (not part of the Taxlots FeatureServer's own
     // relationships) — looked up by a point-intersects query against the

@@ -5,6 +5,46 @@ of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-07 — Property Details
+
+### Added
+
+- **Property Details right-rail panel.** Clicking a rendered Property
+  Boundaries parcel now selects and highlights it (in place, without
+  reloading the surrounding boundaries) and opens a "Property Details" panel
+  in the existing right-side rail, fetching that parcel's record from the
+  existing `/api/parcels/detail` route.
+- **Normalized property detail display across Oregon, North Carolina, and
+  Virginia.** One provider-neutral Overview/Property/Values/Improvements/
+  Source model drives the panel for every supported region — no
+  per-provider UI branching — and degrades cleanly when a provider lacks a
+  given field (e.g. Virginia's sparser statewide records).
+- **Official property-record links**, rendered only when a provider actually
+  supplies one (currently Deschutes County's DIAL link), opened in a new tab.
+- **Statewide North Carolina parcel provider** (NC OneMap / NC Integrated
+  Cadastral Data Exchange) and **statewide Virginia parcel provider**
+  (Virginia Geographic Information Network), both live-verified, joining the
+  existing Deschutes County, Oregon provider.
+
+### Improved
+
+- **Deterministic parcel geometry identity.** A selected parcel's
+  render/entity identity is now derived from its own geometry rather than
+  its position in a viewport response, so a persisted selection survives a
+  viewport refresh even when duplicate-parcelId records swap order.
+- **North Carolina/Virginia coverage-boundary disambiguation.** Where the
+  two states' coarse coverage areas overlap near their shared border,
+  coverage resolution now confirms which state's parcel data actually
+  contains the point instead of depending on provider registration order.
+- **Parcel privacy protections.** Owner name and owner mailing address stay
+  excluded from every parcel API response and from the new Property Details
+  panel, across all three providers; added regression coverage that
+  specifically fails if an owner field reaches the panel model, the
+  rendering layer, or any provider's response mapping.
+- **Mobile Property Details layout**: the panel remains fully scrollable and
+  usable on narrow screens, with long parcel ids/addresses/links wrapping
+  instead of overflowing.
+
 ## [0.2.0] — 2026-10-06 — ECNC God's Eye: first formal fork release
 
 This is the **ECNC fork's own first formal release number**, starting a

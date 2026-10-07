@@ -4784,6 +4784,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 }
 #right-context-rail > #pp-toggles,
 #right-context-rail > #cctv-panel,
+#right-context-rail > #property-details-panel,
 #right-context-rail > #global-context-panel {
   position: relative;
   inset: auto;
@@ -4800,7 +4801,16 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   max-height: 100%;
   pointer-events: auto;
 }
+#right-context-rail #property-details-panel {
+  width: 100%;
+  max-height: 100%;
+  pointer-events: auto;
+}
 #right-context-rail #cctv-panel.collapsed {
+  width: var(--right-display-collapsed-width);
+  margin-left: auto;
+}
+#right-context-rail #property-details-panel.collapsed {
   width: var(--right-display-collapsed-width);
   margin-left: auto;
 }
@@ -4813,12 +4823,18 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 }
 #right-context-rail > #pp-toggles.collapsed .pp-header-row,
 #right-context-rail #cctv-panel.collapsed .cctv-panel-inner,
+#right-context-rail #property-details-panel.collapsed .property-details-panel-inner,
 #right-context-rail #global-context-panel.collapsed .global-context-panel-inner {
   height: 50px;
   min-height: 50px;
   box-sizing: border-box;
 }
 #right-context-rail #cctv-panel:not(.collapsed) .cctv-panel-inner {
+  max-height: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+#right-context-rail #property-details-panel:not(.collapsed) .property-details-panel-inner {
   max-height: 100%;
   overflow-y: auto;
   scrollbar-gutter: stable;
@@ -6319,6 +6335,116 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 .data-toggle-note:hover,
 .data-toggle-note:focus-visible {
   color: var(--text-secondary);
+}
+
+/* ── Property Details Panel (Property Intelligence A3) ─────────────────────────────── */
+#property-details-panel {
+  --panel-expanded-width: 330px;
+  position: relative;
+  z-index: 100;
+  width: var(--panel-expanded-width);
+  max-height: calc(100vh - 24px);
+}
+
+#property-details-panel .panel-glow {
+  position: absolute;
+  inset: -18px;
+  background: radial-gradient(ellipse at center, rgba(34, 199, 232, 0.16) 0%, transparent 65%);
+  filter: blur(16px);
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+.property-details-panel-inner {
+  position: relative;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--panel-radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(34, 199, 232, 0.46) rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+    0 1px 0 rgba(255, 255, 255, 0.06) inset;
+}
+
+.property-details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0; /* let long values wrap/truncate instead of forcing the panel wider */
+}
+
+.property-details-status {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.property-details-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.property-details-section-title {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--glass-border);
+  padding-bottom: 4px;
+}
+
+.property-details-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.property-details-label {
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+}
+
+/* Long parcel ids/addresses/URLs must wrap, never force horizontal scroll —
+   critical on narrow screens (A3 Part 12). */
+.property-details-value,
+.property-details-link {
+  color: var(--text-primary);
+  text-align: right;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
+}
+
+.property-details-link {
+  align-self: flex-start;
+  text-align: left;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 13px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-top: 4px;
+}
+
+.property-details-link:hover,
+.property-details-link:focus-visible {
+  border-color: var(--accent);
 }
 
 /* ── CCTV Panel ─────────────────────────────── */
@@ -9845,6 +9971,7 @@ body.scene-playback-mode #key-setup {
 #data-panel,
 #global-context-panel,
 #cctv-panel,
+#property-details-panel,
 #scene-panel,
 #location-bar,
 #command-dock {
@@ -10372,7 +10499,7 @@ body.cockpit-mode :is(#app-header, #layer-drawer, #about-dialog, #whats-new-dial
   .drawer-group-count { font-size: 13px; }
 
   /* While the sheet is open the transient panels and dock step aside (state untouched). */
-  body.mobile-sheet-open :is(#cctv-panel, #scene-panel, #global-context-panel, #map-weather-card, #street-view-card,
+  body.mobile-sheet-open :is(#cctv-panel, #scene-panel, #global-context-panel, #property-details-panel, #map-weather-card, #street-view-card,
     #command-dock, #key-setup-chip, #flight-details-panel, #flight-details-btn) { visibility: hidden; pointer-events: none; }
 
   /* -- Utility panels: one at a time, as a card above the credit line ------------ */

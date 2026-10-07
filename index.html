@@ -921,6 +921,22 @@
 
   <!-- Global Context is deliberately independent from the left layer accordion. -->
   <aside id="right-context-rail">
+    <!-- Property Intelligence A3 — Property Details. Hidden by default: it
+         opens only when a Property Boundaries parcel is selected (see
+         src/propertyDetailsPanel.js, which owns this panel's content and
+         visibility entirely, the same way _renderCctvState() in ui.js owns
+         #cctv-panel's — this one never clutters the right rail otherwise. -->
+    <div id="property-details-panel" class="panel-collapsible collapsed" data-panel-id="property-details-panel" hidden>
+      <div class="panel-glow"></div>
+      <div class="property-details-panel-inner">
+        <div class="panel-header">
+          <span class="panel-title">PROPERTY DETAILS</span>
+          <span class="panel-divider"></span>
+          <button class="panel-collapse-btn" data-collapse-target="property-details-panel" title="Collapse panel">+</button>
+        </div>
+        <div id="property-details-body" class="property-details-body"></div>
+      </div>
+    </div>
     <div id="global-context-panel" class="panel-collapsible collapsed" data-panel-id="global-context-panel">
       <div class="panel-glow"></div>
       <div class="global-context-panel-inner">

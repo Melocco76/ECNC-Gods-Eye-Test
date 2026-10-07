@@ -172,6 +172,8 @@ test('a missing provider field is null/omitted, never fabricated', () => {
   assert.equal(parcel.owner.name, null);
   assert.equal(parcel.values.assessed, null);
   assert.equal(parcel.values.market, null);
+  assert.equal(parcel.values.land, null);
+  assert.equal(parcel.values.improvements, null);
   assert.equal(parcel.zoning, null);
   assert.equal(parcel.improvements.yearBuilt, null);
   assert.equal(parcel.improvements.buildingArea, null);
@@ -179,6 +181,13 @@ test('a missing provider field is null/omitted, never fabricated', () => {
   assert.deepEqual(parcel.officialLinks, []);
   assert.equal(parcel.acreage, null);
   assert.equal(parcel.acreageSource, null);
+});
+
+test('A3: land value and improvement value normalize independently of assessed/taxable/market', () => {
+  const parcel = buildNormalizedParcel({ ...FULL_INPUT, landValue: 95000, improvementValue: 125000 });
+  assert.equal(parcel.values.land, 95000);
+  assert.equal(parcel.values.improvements, 125000);
+  assert.equal(parcel.values.assessed, 412340, 'unaffected by the new fields');
 });
 
 test('acreage falls back to a computed figure from Shape__Area only when the assessor value is absent, and is labelled as computed', () => {
