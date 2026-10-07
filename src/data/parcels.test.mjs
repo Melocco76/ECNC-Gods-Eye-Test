@@ -481,6 +481,13 @@ test('19 (A2.4): the generic layer module contains no NC/VA-specific branching â
   }
 });
 
+test('13 (TN coverage expansion): the generic layer module contains no Tennessee-specific branching â€” the new provider needed zero client changes', () => {
+  const source = code('./parcels.js');
+  for (const needle of ['tn-statewide', 'tennessee', 'geoviewer', 'gislink', 'comptroller']) {
+    assert.equal(new RegExp(needle, 'i').test(source), false, needle);
+  }
+});
+
 test('this layer is registered with the id the registration files expect', () => {
   assert.equal(LAYER_ID, 'property-parcels');
   assert.equal(propertyParcelsLayer.id, LAYER_ID);

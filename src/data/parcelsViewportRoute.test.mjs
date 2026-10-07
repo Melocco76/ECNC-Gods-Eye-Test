@@ -334,6 +334,75 @@ test('18. saturation behavior remains intact for NC — a truncated upstream res
   assert.equal(body.saturated, false, 'five features is well under the 400 cap — not saturated');
 });
 
+// -- Tennessee statewide coverage expansion: coverage + viewport through the SAME generic route -------
+
+const tnConfig = getParcelProviderConfig('tn-statewide');
+const TN_LAYER_URL = `${tnConfig.featureServerUrl}/${tnConfig.layers.parcels.id}/query`;
+
+// A point inside TN's coverage bbox but clearly outside NC's/VA's — a
+// rural-central-TN coordinate (Cumberland County, confirmed live during
+// research), so this exercises TN's single-bbox-match fast path.
+const TN_LAT = 35.95;
+const TN_LON = -85.02;
+const TN_BBOX = { south: 35.93, west: -85.04, north: 35.97, east: -85.00 };
+
+const TN_FEATURE_WITH_OWNER_FIELDS = {
+  attributes: {
+    OBJECTID: 1571, GISLINK: '018113D C 00100', GISLINK2: ' ', PARID: '113D C 00100 000', PARCELID: '018 113D C 00100 000 2027',
+    OWNER: 'EXAMPLE OWNER LLC', MAILADDR: '123 MAIN ST', STATE: 'TN', ZIP: '38555',
+    ADDRESS: 'DAYTON AVE 517', CALC_ACRE: 0.84236135, ZONING: 'R1', LANDUSE: '11 - HOUSEHOLD UNITS',
+    LANDVAL: 15000, IMPVAL: 85000, APPRAISAL: 100000,
+  },
+  geometry: { rings: [[[TN_BBOX.west, TN_BBOX.south], [TN_BBOX.east, TN_BBOX.south], [TN_BBOX.east, TN_BBOX.north], [TN_BBOX.west, TN_BBOX.north], [TN_BBOX.west, TN_BBOX.south]]] },
+};
+
+test('3. /coverage inside Tennessee resolves tn-statewide, purely from the registry (no upstream call)', async () => {
+  const upstream = fakeFetch([]); // throws on ANY upstream call
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${TN_LAT}&lon=${TN_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: 'tn-statewide', providerId: 'tennessee-statewide', sourceAgency: tnConfig.sourceAgency });
+  assert.equal(upstream.calls.length, 0);
+});
+
+test('4/5. TN /viewport returns real geometry via the SAME generic route, outSR=4326 requested, no owner data', async () => {
+  const upstream = fakeFetch([[TN_LAYER_URL, okJson({ features: [TN_FEATURE_WITH_OWNER_FIELDS], exceededTransferLimit: false })]]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/viewport?region=tn-statewide&south=${TN_BBOX.south}&west=${TN_BBOX.west}&north=${TN_BBOX.north}&east=${TN_BBOX.east}`);
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.region, 'tn-statewide');
+  assert.equal(body.providerId, 'tennessee-statewide');
+  assert.equal(body.count, 1);
+  assert.equal(body.parcels[0].parcelId, '018113D C 00100');
+  assert.equal(body.parcels[0].geometry.type, 'Polygon');
+  assert.ok(upstream.calls[0].includes('outSR=4326'));
+  assert.doesNotMatch(res.body, /owner/i, 'no owner key anywhere in the viewport response body');
+});
+
+test('10. TN saturation is reported via exceededTransferLimit even when the feature count stays under the public 400 cap', async () => {
+  const twoHundred = Array.from({ length: 200 }, (_, i) => ({
+    attributes: { OBJECTID: i, GISLINK: `TESTLINK${i}` },
+    geometry: TN_FEATURE_WITH_OWNER_FIELDS.geometry,
+  }));
+  const upstream = fakeFetch([[TN_LAYER_URL, okJson({ features: twoHundred, exceededTransferLimit: true })]]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/viewport?region=tn-statewide&south=${TN_BBOX.south}&west=${TN_BBOX.west}&north=${TN_BBOX.north}&east=${TN_BBOX.east}`);
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.count, 200, 'well under the 400 cap by count alone');
+  assert.equal(body.saturated, true, 'the provider\'s own exceededTransferLimit signal must still surface as saturated');
+});
+
+test('12. existing NC/VA/OR coverage resolution is unaffected by adding TN', async () => {
+  const { call } = installParcels(fullUpstream().impl);
+  assert.deepEqual(json(await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`)), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
+  const ncUpstream = fakeFetch([]);
+  assert.deepEqual(json(await installParcels(ncUpstream.impl).call(`/coverage?lat=${NC_LAT}&lon=${NC_LON}`)), { region: 'nc-statewide', providerId: 'north-carolina-onemap', sourceAgency: ncConfig.sourceAgency });
+  const vaUpstream = fakeFetch([]);
+  assert.deepEqual(json(await installParcels(vaUpstream.impl).call(`/coverage?lat=${VA_LAT}&lon=${VA_LON}`)), { region: 'va-statewide', providerId: 'virginia-statewide', sourceAgency: vaConfig.sourceAgency });
+});
+
 // -- A2.4 hardening: coverage overlap disambiguation (NC/VA bbox overlap near the border) -----------
 
 // A point inside BOTH nc-statewide's and va-statewide's coarse, padded
@@ -466,6 +535,41 @@ test('9. existing inland coverage cases (single bbox match each) remain unaffect
   assert.deepEqual(json(await installParcels(ncUpstream.impl).call(`/coverage?lat=${NC_LAT}&lon=${NC_LON}`)), { region: 'nc-statewide', providerId: 'north-carolina-onemap', sourceAgency: ncConfig.sourceAgency });
   const vaUpstream = fakeFetch([]);
   assert.deepEqual(json(await installParcels(vaUpstream.impl).call(`/coverage?lat=${VA_LAT}&lon=${VA_LON}`)), { region: 'va-statewide', providerId: 'virginia-statewide', sourceAgency: vaConfig.sourceAgency });
+});
+
+// -- Tennessee coverage expansion: TN's bbox genuinely overlaps NC's/VA's near their shared borders ------
+
+// A point inside BOTH tn-statewide's and nc-statewide's coarse bbox (east
+// TN / western NC) — exercises the SAME generic disambiguation mechanism,
+// with no TN-specific code path.
+const TN_NC_OVERLAP_LAT = 35.6;
+const TN_NC_OVERLAP_LON = -83.5;
+
+const tnIdentifyFeature = {
+  attributes: { OBJECTID: 1, GISLINK: 'TNPARCEL1', OWNER: 'EXAMPLE OWNER LLC' },
+  geometry: { rings: [[[TN_NC_OVERLAP_LON - 0.001, TN_NC_OVERLAP_LAT - 0.001], [TN_NC_OVERLAP_LON + 0.001, TN_NC_OVERLAP_LAT - 0.001], [TN_NC_OVERLAP_LON + 0.001, TN_NC_OVERLAP_LAT + 0.001], [TN_NC_OVERLAP_LON - 0.001, TN_NC_OVERLAP_LAT + 0.001], [TN_NC_OVERLAP_LON - 0.001, TN_NC_OVERLAP_LAT - 0.001]]] },
+};
+
+test('TN/NC coverage overlap: only TN identify confirms a parcel => tn-statewide, via the SAME existing multi-candidate disambiguation (no TN-specific route code)', async () => {
+  const upstream = fakeFetch([
+    [TN_LAYER_URL, okJson({ features: [tnIdentifyFeature], exceededTransferLimit: false })],
+    [NC_LAYER_URL, noFeatures],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${TN_NC_OVERLAP_LAT}&lon=${TN_NC_OVERLAP_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: 'tn-statewide', providerId: 'tennessee-statewide', sourceAgency: tnConfig.sourceAgency });
+});
+
+test('TN/NC coverage overlap: only NC identify confirms a parcel => nc-statewide, even though NC is visited after TN in the unchanged registry', async () => {
+  const upstream = fakeFetch([
+    [TN_LAYER_URL, noFeatures],
+    [NC_LAYER_URL, okJson({ features: [{ attributes: { objectid: 2, parno: 'NCPARCEL2', altparno: null }, geometry: tnIdentifyFeature.geometry }] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${TN_NC_OVERLAP_LAT}&lon=${TN_NC_OVERLAP_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: 'nc-statewide', providerId: 'north-carolina-onemap', sourceAgency: ncConfig.sourceAgency });
 });
 
 test('/identify, /detail, /geometry, /search still work exactly as before, with no owner key leaking', async () => {

@@ -20,6 +20,7 @@
 import { createOregonDeschutesProvider } from './parcelProviders/oregonDeschutes.js';
 import { createNorthCarolinaOneMapProvider } from './parcelProviders/northCarolinaOneMap.js';
 import { createVirginiaStatewideProvider } from './parcelProviders/virginiaStatewide.js';
+import { createTennesseeStatewideProvider } from './parcelProviders/tennesseeStatewide.js';
 
 /** Deschutes County, Oregon coverage bbox — padded from the service's own
  *  published extent ([-122.00124, 43.61111] to [-119.89659, 44.39349]).
@@ -81,6 +82,34 @@ const VA_COVERAGE_BBOX = Object.freeze({ west: -83.75, south: 36.5, east: -75.1,
 /** Same reasoning as `NC_PARCEL_ID_PATTERN` — `PARCELID` format varies by
  *  locality; the `va-oid-<objectid>` synthetic fallback is namespaced. */
 const VA_PARCEL_ID_PATTERN = /^(?:va-oid-\d+|[A-Za-z0-9][A-Za-z0-9/.\-]{0,39})$/;
+
+/**
+ * Tennessee statewide parcels (Tennessee Comptroller of the Treasury,
+ * Division of Property Assessments / Geographic Services — "GeoViewer").
+ * Confirmed live: `GeoViewer_Parcels/MapServer/0` ("Statewide_Parcels"),
+ * `maxRecordCount` 200. See `tennesseeStatewide.js`'s module docstring for
+ * why this endpoint was chosen over the nominally-"primary" `_R` variant
+ * (narrower real county coverage) and the `IMPACT` FeatureServer (sparse
+ * fields, unreliable `/query`).
+ */
+const TN_GEOVIEWER_FEATURE_SERVER = 'https://geoviewer.cot.tn.gov/arcgis/rest/services/GeoViewer/GeoViewer_Parcels/MapServer';
+
+/** Tennessee statewide coverage bbox — padded beyond the state's actual
+ *  bounds (~34.98–36.68°N, ~-90.31– -81.65°W). Coarse point-gate only.
+ *  Overlaps NC's and VA's own coverageBbox near their shared borders by
+ *  design — the existing multi-candidate coverage disambiguation (see
+ *  `vite.config.js`'s `/coverage` route) resolves that, not this bbox. */
+const TN_COVERAGE_BBOX = Object.freeze({ west: -90.4, south: 34.9, east: -81.6, north: 36.7 });
+
+/**
+ * Parcel identity for TN GeoViewer: `GISLINK` values contain embedded
+ * spaces as part of their own format (e.g. `"018113D C 00100"`, confirmed
+ * live) — unlike NC/VA's identity fields, so the allowed character set
+ * includes a literal space. The `tn-oid-<objectid>` synthetic fallback is
+ * namespaced so it can never collide with a real parcel id or another
+ * provider's own fallback.
+ */
+const TN_PARCEL_ID_PATTERN = /^(?:tn-oid-\d+|[A-Za-z0-9][A-Za-z0-9/.\- ]{0,49})$/;
 
 export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
   'or-deschutes': Object.freeze({
@@ -203,6 +232,52 @@ export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
     }),
     search: Object.freeze({ minLength: 3, maxLength: 80, resultCap: 15 }),
     factory: createVirginiaStatewideProvider,
+  }),
+
+  'tn-statewide': Object.freeze({
+    region: 'tn-statewide',
+    providerId: 'tennessee-statewide',
+    state: 'TN',
+    county: null, // statewide aggregate — individual county is per-record (`COUNTY`), not per-provider
+    sourceAgency: 'Tennessee Comptroller of the Treasury — Division of Property Assessments / Geographic Services',
+    featureServerUrl: TN_GEOVIEWER_FEATURE_SERVER,
+    coverageBbox: TN_COVERAGE_BBOX,
+    parcelIdPattern: TN_PARCEL_ID_PATTERN,
+    // One flat parcel layer. Owner/mailing fields (`OWNER`, `OWNER2`,
+    // `OWNJAN1`, `OWNJAN1_2`, `MAILADDR`, `MAILCITY`, `MAILLINE1-3`,
+    // `UNLISTOWN`, `UNLISTJAN1`, and the ambiguous `STATE`/`ZIP` fields that
+    // sit inside that same mailing block) are DELIBERATELY not mapped
+    // anywhere in this config — see `tennesseeStatewide.js` and its privacy
+    // tests.
+    layers: Object.freeze({
+      parcels: Object.freeze({
+        id: 0,
+        idField: 'GISLINK',
+        altIdField: 'GISLINK2',
+        secondaryIdField: 'PARID',
+        tertiaryIdField: 'PARCELID', // embeds the tax year — least stable, tried last
+        objectIdField: 'OBJECTID',
+        addressField: 'ADDRESS',
+        acreageField: 'CALC_ACRE',
+        zoningField: 'ZONING',
+        landUseField: 'LANDUSE',
+        landValueField: 'LANDVAL',
+        improvementValueField: 'IMPVAL',
+        marketValueField: 'APPRAISAL', // total appraised value — not necessarily a market sale value
+        yearBuiltField: 'YRBLT',
+        buildingAreaField: 'SFLA',
+        // No shapeAreaField: the real field is literally named `Shape.STArea()`
+        // (confirmed live) and this provider never needs a geometry-derived
+        // acreage fallback anyway — `CALC_ACRE` is already a reliable,
+        // provider-published figure — so it is not requested at all.
+      }),
+    }),
+    capabilities: Object.freeze({
+      search: true, identify: true, geometry: true, values: true, improvements: true, zoning: true, owner: false,
+      taxable: false, landUse: true, effectiveDate: false,
+    }),
+    search: Object.freeze({ minLength: 3, maxLength: 80, resultCap: 15 }),
+    factory: createTennesseeStatewideProvider,
   }),
 });
 

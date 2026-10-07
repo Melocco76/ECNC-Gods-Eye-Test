@@ -53,6 +53,17 @@ test('2. va-statewide is registered with the exact confirmed FeatureServer, laye
   assert.match(config.sourceAgency, /Virginia|VGIN/i);
 });
 
+test('3. tn-statewide is registered with the exact confirmed FeatureServer, layer id, and field mapping', () => {
+  const config = getParcelProviderConfig('tn-statewide');
+  assert.ok(config);
+  assert.equal(config.featureServerUrl, 'https://geoviewer.cot.tn.gov/arcgis/rest/services/GeoViewer/GeoViewer_Parcels/MapServer');
+  assert.equal(config.layers.parcels.id, 0, 'confirmed live: "Statewide_Parcels"');
+  assert.equal(config.layers.parcels.idField, 'GISLINK');
+  assert.equal(config.layers.parcels.objectIdField, 'OBJECTID');
+  assert.equal(config.state, 'TN');
+  assert.match(config.sourceAgency, /Tennessee Comptroller/i);
+});
+
 test('an unknown region resolves to null everywhere — never a default/fallback provider', () => {
   assert.equal(getParcelProviderConfig('nc-forsyth'), null, 'per-county NC id not built — this provider is statewide');
   assert.equal(getParcelProviderConfig(''), null);
@@ -65,7 +76,7 @@ test('an unknown region resolves to null everywhere — never a default/fallback
 
 test('listParcelRegions reflects exactly the compiled-in registry keys', () => {
   assert.deepEqual(listParcelRegions(), Object.keys(PARCEL_PROVIDER_REGISTRY));
-  assert.deepEqual(listParcelRegions(), ['or-deschutes', 'nc-statewide', 'va-statewide'], 'A2.4 ships three regions');
+  assert.deepEqual(listParcelRegions(), ['or-deschutes', 'nc-statewide', 'va-statewide', 'tn-statewide']);
 });
 
 test('resolving any known region returns a usable provider object with the five required operations — no region-specific special-casing in the resolver', () => {

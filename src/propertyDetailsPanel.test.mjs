@@ -119,6 +119,19 @@ const VA_SPARSE_PARCEL = {
   officialLinks: [],
 };
 
+const TN_LIKE_PARCEL = {
+  providerId: 'tennessee-statewide', sourceAgency: 'Tennessee Comptroller of the Treasury — Division of Property Assessments / Geographic Services',
+  sourceUrl: 'https://geoviewer.cot.tn.gov/arcgis/rest/services/GeoViewer/GeoViewer_Parcels/MapServer', retrievedAt: '2026-10-10T12:00:00.000Z', effectiveDate: null,
+  parcelId: '018113D C 00100', taxLot: '018113D C 00100', accountId: null,
+  address: { full: 'DAYTON AVE 517', city: null, state: 'TN', zip: null },
+  acreage: 0.84236135, acreageSource: 'assessor',
+  values: { assessed: null, taxable: null, market: 100000, land: 15000, improvements: 85000 },
+  landUse: '11 - HOUSEHOLD UNITS', zoning: 'R1',
+  improvements: { yearBuilt: 1998, buildingArea: 1840, garageArea: null, bedrooms: null, bathrooms: null },
+  geometry: { type: 'Polygon', coordinates: [[[0, 0], [0, 1], [1, 1], [0, 0]]] },
+  officialLinks: [],
+};
+
 test('9. OR detail model renders Overview/Property/Values/Improvements/Source — the richest provider', () => {
   const model = buildPropertyDetailModel(OR_LIKE_PARCEL);
   const sectionIds = model.sections.map((s) => s.id);
@@ -155,16 +168,31 @@ test('11. VA sparse detail model omits unavailable rows entirely — no Address,
   assert.equal(model.officialLinks.length, 0);
 });
 
+test('11b (TN coverage expansion): TN detail model renders address/acreage/zoning/land-use/values/improvements through the SAME generic sections — no provider-specific code needed', () => {
+  const model = buildPropertyDetailModel(TN_LIKE_PARCEL);
+  const sectionIds = model.sections.map((s) => s.id);
+  assert.deepEqual(sectionIds, ['overview', 'property', 'values', 'improvements', 'source']);
+  const overview = model.sections.find((s) => s.id === 'overview');
+  assert.equal(overview.rows.find((r) => r.label === 'Address').value, 'DAYTON AVE 517, TN');
+  assert.equal(overview.rows.find((r) => r.label === 'Acreage').value, '0.84 acres');
+  const values = model.sections.find((s) => s.id === 'values');
+  assert.deepEqual(values.rows.map((r) => r.label), ['Market / Parcel Value', 'Land Value', 'Improvement Value'], 'Assessed/Taxable omitted — null for this provider');
+  const improvements = model.sections.find((s) => s.id === 'improvements');
+  assert.deepEqual(improvements.rows.map((r) => r.label), ['Year Built', 'Building Area'], 'Garage/bedrooms/bathrooms omitted — this schema has none');
+  assert.equal(model.officialLinks.length, 0);
+});
+
 test('16. an official link is included only when the provider actually returned one', () => {
   assert.equal(buildPropertyDetailModel(OR_LIKE_PARCEL).officialLinks.length, 1);
   assert.equal(buildPropertyDetailModel(NC_LIKE_PARCEL).officialLinks.length, 0);
   assert.equal(buildPropertyDetailModel(VA_SPARSE_PARCEL).officialLinks.length, 0);
+  assert.equal(buildPropertyDetailModel(TN_LIKE_PARCEL).officialLinks.length, 0);
   const malformed = buildPropertyDetailModel({ ...OR_LIKE_PARCEL, officialLinks: [{ label: 'no url' }, null, { label: 'ok', url: '  ' }] });
   assert.equal(malformed.officialLinks.length, 0, 'a link with no real url is never rendered, never a speculative/constructed one');
 });
 
 test('17. source agency is always shown for every provider that supplies one', () => {
-  for (const parcel of [OR_LIKE_PARCEL, NC_LIKE_PARCEL, VA_SPARSE_PARCEL]) {
+  for (const parcel of [OR_LIKE_PARCEL, NC_LIKE_PARCEL, VA_SPARSE_PARCEL, TN_LIKE_PARCEL]) {
     const model = buildPropertyDetailModel(parcel);
     const source = model.sections.find((s) => s.id === 'source');
     assert.ok(source.rows.some((r) => r.label === 'Source Agency' && r.value === parcel.sourceAgency));
@@ -188,7 +216,14 @@ test('20. no owner-search affordance exists anywhere in this module\'s source', 
 
 test('21. the generic model builder never branches on providerId/state — same function for every provider', () => {
   const source = code('./propertyDetailsPanel.js');
-  assert.equal(/providerId\s*===|state\s*===\s*'(OR|NC|VA)'|'(oregon|north-carolina|virginia)/i.test(source), false);
+  assert.equal(/providerId\s*===|state\s*===\s*'(OR|NC|VA|TN)'|'(oregon|north-carolina|virginia|tennessee)/i.test(source), false);
+});
+
+test('14 (TN coverage expansion): no Tennessee-specific branching anywhere in this module either', () => {
+  const source = code('./propertyDetailsPanel.js');
+  for (const needle of ['tn-statewide', 'tennessee', 'geoviewer', 'gislink', 'comptroller']) {
+    assert.equal(new RegExp(needle, 'i').test(source), false, needle);
+  }
 });
 
 // -- 2/3/4/5. fetch controller: URL shape, dedupe, abort/generation guard ------------------------------
