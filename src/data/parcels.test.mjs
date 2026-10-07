@@ -495,6 +495,13 @@ test('14 (SC coverage expansion): the generic layer module contains no South-Car
   }
 });
 
+test('15 (GA coverage expansion): the generic layer module contains no Georgia-specific branching — the new provider needed zero client changes', () => {
+  const source = code('./parcels.js');
+  for (const needle of ['ga-counties', 'georgia', 'fulton', 'dekalb', 'gwinnett', 'forsyth', 'clarke', 'richmond']) {
+    assert.equal(new RegExp(needle, 'i').test(source), false, needle);
+  }
+});
+
 test('this layer is registered with the id the registration files expect', () => {
   assert.equal(LAYER_ID, 'property-parcels');
   assert.equal(propertyParcelsLayer.id, LAYER_ID);

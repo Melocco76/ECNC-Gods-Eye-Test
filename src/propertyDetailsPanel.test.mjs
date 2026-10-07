@@ -239,7 +239,7 @@ test('20. no owner-search affordance exists anywhere in this module\'s source', 
 
 test('21. the generic model builder never branches on providerId/state — same function for every provider', () => {
   const source = code('./propertyDetailsPanel.js');
-  assert.equal(/providerId\s*===|state\s*===\s*'(OR|NC|VA|TN|SC)'|'(oregon|north-carolina|virginia|tennessee|south-carolina)/i.test(source), false);
+  assert.equal(/providerId\s*===|state\s*===\s*'(OR|NC|VA|TN|SC|GA)'|'(oregon|north-carolina|virginia|tennessee|south-carolina|georgia)/i.test(source), false);
 });
 
 test('14 (TN coverage expansion): no Tennessee-specific branching anywhere in this module either', () => {
@@ -252,6 +252,13 @@ test('14 (TN coverage expansion): no Tennessee-specific branching anywhere in th
 test('15 (SC coverage expansion): no South-Carolina-specific branching anywhere in this module either', () => {
   const source = code('./propertyDetailsPanel.js');
   for (const needle of ['sc-counties', 'south-carolina', 'south carolina', 'york', 'horry', 'parno']) {
+    assert.equal(new RegExp(needle, 'i').test(source), false, needle);
+  }
+});
+
+test('16 (GA coverage expansion): no Georgia-specific branching anywhere in this module either', () => {
+  const source = code('./propertyDetailsPanel.js');
+  for (const needle of ['ga-counties', 'georgia', 'fulton', 'dekalb', 'gwinnett', 'forsyth', 'clarke', 'richmond']) {
     assert.equal(new RegExp(needle, 'i').test(source), false, needle);
   }
 });

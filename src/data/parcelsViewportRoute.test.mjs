@@ -666,3 +666,61 @@ test('13 (SC coverage expansion): existing OR/NC/VA/TN coverage resolution is un
   const { call } = installParcels(fullUpstream().impl);
   assert.deepEqual(json(await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`)), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
 });
+
+// -- Georgia coverage expansion: coverage + viewport through the SAME generic route -------
+
+const gaConfig = getParcelProviderConfig('ga-counties');
+const GA_BOUNDARY_URL = `${gaConfig.countyBoundaryUrl}/query`;
+const GA_FULTON_LAYER_URL = `${gaConfig.counties.FULTON.featureServerUrl}/0/query`;
+
+// A point/bbox inside Fulton County, GA — confirmed live during research.
+const GA_FULTON_LAT = 33.5025;
+const GA_FULTON_LON = -84.6145;
+const GA_FULTON_BBOX = { south: 33.495, west: -84.62, north: 33.51, east: -84.60 };
+
+const GA_FULTON_BOUNDARY_FEATURE = { attributes: { NAME: 'Fulton County' } };
+const GA_FULTON_PARCEL_FEATURE = {
+  attributes: { OBJECTID: 1, ParcelID: '07 410001590187', Address: '0 GULLATT RD', LandAcres: 5.02, LUCode: '100' },
+  geometry: { rings: [[[GA_FULTON_BBOX.west, GA_FULTON_BBOX.south], [GA_FULTON_BBOX.east, GA_FULTON_BBOX.south], [GA_FULTON_BBOX.east, GA_FULTON_BBOX.north], [GA_FULTON_BBOX.west, GA_FULTON_BBOX.north], [GA_FULTON_BBOX.west, GA_FULTON_BBOX.south]]] },
+};
+
+test('GA: /coverage for a point inside Fulton County resolves ga-counties via the real county-boundary service', async () => {
+  const upstream = fakeFetch([
+    [GA_BOUNDARY_URL, okJson({ features: [GA_FULTON_BOUNDARY_FEATURE] })],
+    [GA_FULTON_LAYER_URL, okJson({ features: [GA_FULTON_PARCEL_FEATURE] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/coverage?lat=${GA_FULTON_LAT}&lon=${GA_FULTON_LON}`);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: 'ga-counties', providerId: 'georgia-county-parcels', sourceAgency: gaConfig.sourceAgency });
+});
+
+test('GA: /viewport for Fulton County returns real geometry via the SAME generic route, outSR=4326, no owner data', async () => {
+  const upstream = fakeFetch([[GA_FULTON_LAYER_URL, okJson({ features: [GA_FULTON_PARCEL_FEATURE], exceededTransferLimit: false })]]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call(`/viewport?region=ga-counties&south=${GA_FULTON_BBOX.south}&west=${GA_FULTON_BBOX.west}&north=${GA_FULTON_BBOX.north}&east=${GA_FULTON_BBOX.east}`);
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.region, 'ga-counties');
+  assert.equal(body.providerId, 'georgia-county-parcels');
+  assert.equal(body.count, 1);
+  assert.equal(body.parcels[0].parcelId, 'FULTON:07 410001590187');
+  assert.equal(body.parcels[0].geometry.type, 'Polygon');
+  assert.ok(upstream.calls[0].includes('outSR=4326'));
+  assert.doesNotMatch(res.body, /owner/i, 'no owner key anywhere in the viewport response body');
+});
+
+test('GA: a point the boundary service resolves to an unsupported county reports no coverage, never a fake match', async () => {
+  const upstream = fakeFetch([
+    [GA_BOUNDARY_URL, okJson({ features: [{ attributes: { NAME: 'Chatham County' } }] })],
+  ]);
+  const { call } = installParcels(upstream.impl);
+  const res = await call('/coverage?lat=32.08&lon=-81.1');
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json(res), { region: null });
+});
+
+test('GA/SC coverage overlap (none expected, but exercised anyway): existing OR/NC/VA/TN/SC coverage resolution is unaffected by adding GA', async () => {
+  const { call } = installParcels(fullUpstream().impl);
+  assert.deepEqual(json(await call(`/coverage?lat=${INSIDE_LAT}&lon=${INSIDE_LON}`)), { region: 'or-deschutes', providerId: 'oregon-deschutes-county', sourceAgency: "Deschutes County Assessor's Office" });
+});

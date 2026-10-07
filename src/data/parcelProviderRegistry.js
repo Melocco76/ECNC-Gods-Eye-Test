@@ -22,6 +22,7 @@ import { createNorthCarolinaOneMapProvider } from './parcelProviders/northCaroli
 import { createVirginiaStatewideProvider } from './parcelProviders/virginiaStatewide.js';
 import { createTennesseeStatewideProvider } from './parcelProviders/tennesseeStatewide.js';
 import { createSouthCarolinaCountyParcelsProvider } from './parcelProviders/southCarolinaCountyParcels.js';
+import { createGeorgiaCountyParcelsProvider } from './parcelProviders/georgiaCountyParcels.js';
 
 /** Deschutes County, Oregon coverage bbox — padded from the service's own
  *  published extent ([-122.00124, 43.61111] to [-119.89659, 44.39349]).
@@ -142,6 +143,31 @@ const SC_COVERAGE_BBOX = Object.freeze({ west: -81.4, south: 33.3, east: -78.5, 
  *  formats could otherwise collide — this pattern is namespace-aware, not
  *  a plain per-county id format. */
 const SC_PARCEL_ID_PATTERN = /^(?:YORK|HORRY):(?:sc-oid-\d+|[A-Za-z0-9][A-Za-z0-9/.\-]{0,39})$/;
+
+/**
+ * Georgia has no free/public statewide parcel polygon service either — no
+ * state agency (Georgia GIO, Georgia DOR, or any state ArcGIS
+ * infrastructure) publishes one, confirmed via live research. Coverage is
+ * built county-by-county instead; see `georgiaCountyParcels.js`'s module
+ * docstring for the full discovery/rejection record.
+ */
+
+/** A Census-derived statewide Georgia county-boundary layer — confirmed
+ *  live to resolve a point to its county name (e.g. a Fulton County point
+ *  returns `"Fulton County"`). Used by `georgiaCountyParcels.js` for the
+ *  real county resolution — never a bbox guess. */
+const GA_COUNTY_BOUNDARY_URL = 'https://services2.arcgis.com/vHeD2bHG1G3sW5YZ/arcgis/rest/services/GA_Counties_2020_Census/FeatureServer/0';
+const GA_COUNTY_BOUNDARY_NAME_FIELD = 'NAME';
+
+/** Coarse union pre-filter spanning all six supported counties (Fulton,
+ *  DeKalb, Gwinnett, Forsyth — metro Atlanta; Clarke — Athens; Richmond —
+ *  Augusta), padded. Deliberately coarse — see `SC_COVERAGE_BBOX` above
+ *  for why. */
+const GA_COVERAGE_BBOX = Object.freeze({ west: -84.9, south: 33.25, east: -81.8, north: 34.45 });
+
+/** Every id this provider returns is namespaced `"<COUNTY>:<rawId>"` (see
+ *  `georgiaCountyParcels.js`) — same reasoning as `SC_PARCEL_ID_PATTERN`. */
+const GA_PARCEL_ID_PATTERN = /^(?:FULTON|DEKALB|GWINNETT|FORSYTH|CLARKE|RICHMOND):(?:ga-oid-\d+|[A-Za-z0-9][A-Za-z0-9 /.\-]{0,39})$/;
 
 export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
   'or-deschutes': Object.freeze({
@@ -390,6 +416,190 @@ export const PARCEL_PROVIDER_REGISTRY = Object.freeze({
     }),
     search: Object.freeze({ minLength: 3, maxLength: 80, resultCap: 15 }),
     factory: createSouthCarolinaCountyParcelsProvider,
+  }),
+
+  'ga-counties': Object.freeze({
+    region: 'ga-counties',
+    providerId: 'georgia-county-parcels',
+    state: 'GA',
+    county: null, // multi-county — resolved per-request via the county-boundary service; see docstring above
+    sourceAgency: 'Georgia county GIS departments (per-county; see each county config)',
+    countyBoundaryUrl: GA_COUNTY_BOUNDARY_URL,
+    countyBoundaryNameField: GA_COUNTY_BOUNDARY_NAME_FIELD,
+    coverageBbox: GA_COVERAGE_BBOX,
+    parcelIdPattern: GA_PARCEL_ID_PATTERN,
+    // Per-county schemas confirmed live this phase — field names verified
+    // against each service's own `?f=json` metadata, then a live `/query`
+    // with the exact intended outFields list (never guessed). Owner/mailing
+    // fields exist upstream for several of these counties but are
+    // DELIBERATELY not mapped anywhere in this config — see
+    // `georgiaCountyParcels.js` and its privacy tests.
+    counties: Object.freeze({
+      FULTON: Object.freeze({
+        sourceAgency: 'Fulton County, GA GIS',
+        featureServerUrl: 'https://services1.arcgis.com/AQDHTHDrZzfsFsB5/arcgis/rest/services/Tax_Parcels/FeatureServer',
+        bbox: Object.freeze({ west: -84.85, south: 33.25, east: -84.25, north: 34.0 }),
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'ParcelID',
+            altIdField: null,
+            objectIdField: 'OBJECTID',
+            addressField: 'Address',
+            acreageField: 'LandAcres',
+            shapeAreaField: null,
+            landUseField: 'LUCode',
+            zoningField: null, // no zoning field in this schema (ClassCode is a property class, not a zoning district)
+            landValueField: null,
+            improvementValueField: null,
+            marketValueField: null,
+            assessedValueField: null,
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+          }),
+        }),
+      }),
+      DEKALB: Object.freeze({
+        sourceAgency: 'DeKalb County, GA GIS',
+        featureServerUrl: 'https://services2.arcgis.com/IxVN2oUE9EYLSnPE/arcgis/rest/services/Tax_Parcels_2025/FeatureServer',
+        bbox: Object.freeze({ west: -84.4, south: 33.55, east: -83.95, north: 33.95 }),
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'ParcelID',
+            altIdField: null,
+            objectIdField: 'OBJECTID',
+            addressField: null, // confirmed live: this schema has no address field at all
+            acreageField: null, // StatedArea's unit is inconsistent (sometimes null, sometimes "Square Foot") — computed from shapeAreaField instead
+            shapeAreaField: 'Shape__Area', // State-Plane SQUARE FEET — converted to sq-m before the shared computed-acreage fallback, see provider module
+            landUseField: 'LANDUSE',
+            zoningField: 'ZONING',
+            landValueField: 'LAND_VALUE',
+            improvementValueField: 'BLDG_VALUE',
+            marketValueField: 'APPRAISED_VALUE',
+            assessedValueField: 'ASSESSED_VALUE',
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+          }),
+        }),
+      }),
+      GWINNETT: Object.freeze({
+        sourceAgency: 'Gwinnett County, GA GIS',
+        featureServerUrl: 'https://services3.arcgis.com/RfpmnkSAQleRbndX/arcgis/rest/services/Property_and_Tax/FeatureServer',
+        bbox: Object.freeze({ west: -84.2, south: 33.8, east: -83.7, north: 34.2 }),
+        layers: Object.freeze({
+          // Deliberately layer 0 ONLY — this FeatureServer's own related
+          // "Tax Master"/"Tax Owner Address" tables mix site-location
+          // fields with OWNER1/OWNER2/MAILADDR/MAILCITY/MAILSTAT/MAILZIP;
+          // never joined. See module docstring.
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'PIN',
+            altIdField: null,
+            objectIdField: 'OBJECTID',
+            addressField: 'ADDRESS', // confirmed live: a bare street NUMBER only (e.g. "2084"), not a full address — still safe, just minimal
+            acreageField: 'CALCULATEDACREAGE',
+            shapeAreaField: null,
+            landUseField: null,
+            zoningField: null,
+            landValueField: null,
+            improvementValueField: null,
+            marketValueField: null,
+            assessedValueField: null,
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+          }),
+        }),
+      }),
+      FORSYTH: Object.freeze({
+        sourceAgency: 'Forsyth County, GA GIS',
+        featureServerUrl: 'https://geo.forsythco.com/gis/rest/services/Public/Tax_Parcel/FeatureServer',
+        bbox: Object.freeze({ west: -84.3, south: 34.0, east: -83.95, north: 34.35 }),
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'PARCELID',
+            altIdField: null,
+            objectIdField: 'OBJECTID',
+            addressField: 'SITEADDRESS', // confirmed live, distinct from the separate PSTL*/mailing block — never read
+            acreageField: 'STATEDAREA', // confirmed live already in acres
+            shapeAreaField: null,
+            landUseField: 'USEDSCRP',
+            zoningField: 'ZONING',
+            landValueField: 'LNDVALUE',
+            improvementValueField: null, // no distinct building-value field in this schema
+            marketValueField: null,
+            assessedValueField: 'CNTASSDVAL',
+            taxableValueField: 'CNTTXBLVAL',
+            yearBuiltField: 'RESYRBLT',
+            buildingAreaField: 'BLDGAREA',
+          }),
+        }),
+      }),
+      CLARKE: Object.freeze({
+        sourceAgency: 'Athens-Clarke County, GA Unified Government GIS',
+        featureServerUrl: 'https://services2.arcgis.com/xSEULKvB31odt3XQ/arcgis/rest/services/Parcel/FeatureServer',
+        bbox: Object.freeze({ west: -83.48, south: 33.85, east: -83.28, north: 34.02 }),
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 0,
+            idField: 'PARCEL_NO',
+            altIdField: null,
+            objectIdField: 'OBJECTID',
+            addressField: 'PAR_ADD', // confirmed live and distinct from the separate OWNER_NAME/OWNER_ADD/CITY/STATE/ZIP block — never read
+            acreageField: 'ACRES',
+            shapeAreaField: null,
+            landUseField: null,
+            zoningField: null,
+            landValueField: null,
+            improvementValueField: null,
+            marketValueField: null,
+            assessedValueField: null,
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+          }),
+        }),
+      }),
+      RICHMOND: Object.freeze({
+        sourceAgency: 'Augusta-Richmond County, GA GIS',
+        featureServerUrl: 'https://gismap.augustaga.gov/arcgis/rest/services/AGOL/AGSGeneralFeatures/MapServer',
+        bbox: Object.freeze({ west: -82.3, south: 33.3, east: -81.85, north: 33.65 }),
+        layers: Object.freeze({
+          parcels: Object.freeze({
+            id: 9,
+            idField: 'PIN',
+            altIdField: null,
+            objectIdField: 'OBJECTID',
+            addressField: null, // confirmed live: only a bare ZIP field exists (Par_ZIP) — never enough for a safe address line, so never read
+            acreageField: 'GIS_Acreage',
+            shapeAreaField: null,
+            landUseField: null,
+            zoningField: null,
+            landValueField: null,
+            improvementValueField: null,
+            marketValueField: null,
+            assessedValueField: null,
+            taxableValueField: null,
+            yearBuiltField: null,
+            buildingAreaField: null,
+          }),
+        }),
+      }),
+    }),
+    // Reflects the UNION of what's possible across supported counties — an
+    // individual county may still return null for a field its own schema
+    // lacks; Part 9's "missing data simply omits the row" rule covers
+    // that, not a capabilities flag.
+    capabilities: Object.freeze({
+      search: true, identify: true, geometry: true, values: true, improvements: true, zoning: true, owner: false,
+      taxable: true, landUse: true, effectiveDate: false,
+    }),
+    search: Object.freeze({ minLength: 3, maxLength: 80, resultCap: 15 }),
+    factory: createGeorgiaCountyParcelsProvider,
   }),
 });
 
